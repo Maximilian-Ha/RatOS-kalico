@@ -1,0 +1,6 @@
+# Upstream checkouts and build output. Everything here is re-derivable by
+# scripts/build-*.sh, and the checkouts are several hundred MB.
+.work/
+
+__pycache__/
+*.pyc
