@@ -127,6 +127,15 @@ The hard blockers, each verified against the real sources:
   RatOS verifiers report success anyway. The fork cedes the file deliberately.
 - **`sweeping_period`.** Kalico defaults it to `0.0` where Klipper uses `1.2`,
   silently degrading every sweep to plain vibration pulses. Pinned.
+- **A real 600 printer type.** RatOS offers this machine at 300/400/500 only,
+  so today it is generated as a 500 and hand-patched — which is why the
+  generated config had to be renamed to stop the configurator overwriting it.
+  The fork ships **V-Core 4.1 IDEX 600** as its own printer type, with this
+  frame's real `bedMargin`. It has to be a printer type rather than a size,
+  because `bedMargin` is per-printer and is what every derived axis limit and
+  parking position comes from. See [`docs/PRINTER-600.md`](docs/PRINTER-600.md)
+  — switching the machine over is a separate step from the firmware migration,
+  and should be done after it.
 
 Two risks that looked fatal turned out not to be, and are worth stating because
 the earlier analysis got them wrong in both directions:
@@ -161,7 +170,8 @@ kalico/                       the firmware port + its provenance
 configurator/                 the RatOS delta, as anchored transforms
 scripts/                      build the forks; preflight a printer
 tests/                        offline proofs; run-all.sh does everything
-docs/                         architecture, risks, test plan, maintenance
+docs/                         architecture, risks, test plan, maintenance,
+                              and the 600 printer type
 ```
 
 ## Licence

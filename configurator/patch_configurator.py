@@ -22,11 +22,14 @@ It also installs the fork's own publish workflow and removes upstream's, because
 Moonraker pulls a CI-built deployment branch rather than the source branch --
 without that workflow the fork has no branch a printer can be pointed at.
 
+Finally it adds "V-Core 4.1 IDEX 600" as a real printer type, so that machine
+can be generated rather than hand-patched after picking 500.
+
 Usage:
     patch_configurator.py --checkout DIR --kalico-url URL --kalico-branch NAME
                           --kalico-commit SHA --configurator-url URL
                           --source-branch NAME --deployment-branch NAME
-                          [--check] [--no-sweeping-period]
+                          [--check] [--no-sweeping-period] [--no-printer-600]
 
 Exit codes:
     0  patched (or, with --check, already fully patched)
@@ -617,6 +620,66 @@ def workflow_plan(checkout, cfg):
     return writes, deletes
 
 
+PRINTER600_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "printer-600")
+PRINTER600_ID = "v-core-4-1-idex-600"
+PRINTER600_STOCK = "v-core-4-1-idex"
+PRINTER600_IMAGE = "v-core-4-idex.png"
+
+
+def printer_600_plan(checkout, cfg):
+    """Ship "V-Core 4.1 IDEX 600" as a real printer type.
+
+    RatOS offers this machine only at 300/400/500. Picking 500 and hand-editing
+    the result is what the printer does today, and it costs the ability to
+    regenerate at all -- the generated config had to be renamed so the
+    configurator would stop overwriting it.
+
+    It has to be a whole printer type, not just an extra size, because
+    ``bedMargin`` is a per-printer field: the schema only allows x/y/z inside a
+    size entry. This frame's margins are [75, 75] / [1, 65] against the stock
+    [60.6, 60.6] / [14.35, 33.65], and those margins are what the configurator
+    derives the axis limits, both parking positions and ``variable_bed_margin_*``
+    from. A 600 size on the stock printer would still generate wrong numbers.
+
+    Two placements are forced rather than chosen:
+
+    * The definition goes in its own directory because the configurator globs
+      ``printers/*/printer-definition.json`` at runtime and takes the printer id
+      from the directory name.
+    * ``600.cfg`` goes in the *stock* printer's directory, because the shared
+      template hardcodes ``[include RatOS/printers/v-core-4-1-idex/${size}.cfg]``.
+
+    The definition reuses the stock ``v-core-4-1-idex.ts`` template, so no new
+    template has to be bundled -- only printer definitions are read at runtime.
+
+    Returns (text_writes, binary_copies).
+    """
+    printers = os.path.join(checkout, "configuration", "printers")
+    stock = os.path.join(printers, PRINTER600_STOCK)
+    if not os.path.isdir(stock):
+        raise AnchorError(
+            "the stock printer directory %s is gone -- RatOS has restructured "
+            "configuration/printers and the 600 type needs re-homing" % PRINTER600_STOCK
+        )
+    stock_image = os.path.join(stock, PRINTER600_IMAGE)
+    if not os.path.isfile(stock_image):
+        raise AnchorError(
+            "%s no longer ships %s; the 600 printer type would appear without a "
+            "picture" % (PRINTER600_STOCK, PRINTER600_IMAGE)
+        )
+
+    dest = os.path.join(printers, PRINTER600_ID)
+    writes = []
+    for name in ("printer-definition.json", "printer.cfg.overrides"):
+        with open(os.path.join(PRINTER600_SRC, name), "r") as handle:
+            writes.append((os.path.join(dest, name), handle.read()))
+    with open(os.path.join(PRINTER600_SRC, "600.cfg"), "r") as handle:
+        writes.append((os.path.join(stock, "600.cfg"), handle.read()))
+
+    copies = [(stock_image, os.path.join(dest, PRINTER600_IMAGE))]
+    return writes, copies
+
+
 def find_resonance_tester_files(checkout):
     """Every shipped .cfg that opens a [resonance_tester] section."""
     hits = []
@@ -650,6 +713,7 @@ def main(argv=None):
     parser.add_argument("--deployment-branch", required=True)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--no-sweeping-period", action="store_true")
+    parser.add_argument("--no-printer-600", action="store_true")
     args = parser.parse_args(argv)
 
     if not re.fullmatch(r"[0-9a-f]{40}", args.kalico_commit):
@@ -722,6 +786,24 @@ def main(argv=None):
             sys.stderr.write("ERROR: %s\n" % exc)
             return 1
 
+    binary_copies = []
+    if not args.no_printer_600:
+        try:
+            p600_writes, p600_copies = printer_600_plan(checkout, cfg)
+        except (AnchorError, OSError) as exc:
+            sys.stderr.write("ERROR: printer type 600: %s\n" % exc)
+            return 1
+        for path, text in p600_writes:
+            existing = None
+            if os.path.isfile(path):
+                with open(path, "r") as handle:
+                    existing = handle.read()
+            if existing != text:
+                pending.append((path, text))
+        for src, dst in p600_copies:
+            if not os.path.isfile(dst) or open(src, "rb").read() != open(dst, "rb").read():
+                binary_copies.append((src, dst))
+
     try:
         wf_writes, wf_deletes = workflow_plan(checkout, cfg)
     except AnchorError as exc:
@@ -741,6 +823,11 @@ def main(argv=None):
             for path in wf_deletes:
                 print("  %s" % os.path.relpath(path, checkout))
             return 1
+        if binary_copies:
+            print("%d binary file(s) need installing" % len(binary_copies))
+            for _src, dst in binary_copies:
+                print("  %s" % os.path.relpath(dst, checkout))
+            return 1
         if pending:
             print("%d file(s) need patching, %d already patched" % (len(pending), already))
             for path, _text in pending:
@@ -748,6 +835,14 @@ def main(argv=None):
             return 1
         print("checkout is fully patched (%d files carry the %s marker)" % (already, MARKER))
         return 0
+
+    for src, dst in binary_copies:
+        parent = os.path.dirname(dst)
+        if parent and not os.path.isdir(parent):
+            os.makedirs(parent)
+        with open(src, "rb") as rh, open(dst, "wb") as wh:
+            wh.write(rh.read())
+        print("installed %s" % os.path.relpath(dst, checkout))
 
     for path in wf_deletes:
         os.unlink(path)

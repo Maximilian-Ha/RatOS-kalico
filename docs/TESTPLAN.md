@@ -189,6 +189,16 @@ Klipper misbehaves after a rollback, that is where to look; restore
 
 ---
 
+## After it works: the 600 printer type
+
+The fork also ships **V-Core 4.1 IDEX 600** as a real printer type, so this
+machine can be generated instead of hand-patched. Do not do that during the
+firmware migration — switching both at once gives every symptom two suspects.
+Once the printer is printing on Kalico, see
+[`PRINTER-600.md`](PRINTER-600.md).
+
+---
+
 ## What "it works" means
 
 All of stage 3 and 4 clean, one successful print, and no `Timer too close` in

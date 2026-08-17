@@ -117,6 +117,19 @@ if compgen -G "$CHECKOUT/.github/workflows/publish[-.]*" >/dev/null &&
 fi
 note "publish workflow installed, upstream's removed"
 
+# The configurator derives the axis limits from bedMargin in the printer
+# definition, while position_max/endstop live in the size .cfg. If those two
+# ever disagree the printer homes into its own frame, so cross-check them.
+P600="$CHECKOUT/configuration/printers/v-core-4-1-idex-600"
+if [ -d "$P600" ]; then
+	python3 "$REPO_ROOT/tests/verify_size_cfg.py" \
+		"$P600/printer-definition.json" --size 600 \
+		--cfg "$CHECKOUT/configuration/printers/v-core-4-1-idex/600.cfg" ||
+		die "the 600 size .cfg and its printer definition disagree"
+	[ -f "$P600/v-core-4-idex.png" ] ||
+		die "the 600 printer type has no image"
+fi
+
 say "Committing"
 # Explicit paths, not -A: the checkout is a 400 MB tree and anything stray in
 # it would ship to printers.
@@ -132,6 +145,9 @@ git -C "$CHECKOUT" add \
 git -C "$CHECKOUT" add -u -- '*.cfg'
 # The fork's publish workflow, plus the removal of upstream's.
 git -C "$CHECKOUT" add -A -- .github/workflows
+# The V-Core 4.1 IDEX 600 printer type, plus its size cfg in the stock folder.
+git -C "$CHECKOUT" add -A -- configuration/printers/v-core-4-1-idex-600
+git -C "$CHECKOUT" add -A -- configuration/printers/v-core-4-1-idex/600.cfg
 git -C "$CHECKOUT" -c user.name="RatOS-Kalico build" \
 	-c user.email="noreply@localhost" \
 	commit --quiet -m "RatOS 2.1 on Kalico

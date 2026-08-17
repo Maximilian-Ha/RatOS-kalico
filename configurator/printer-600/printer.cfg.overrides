@@ -1,0 +1,52 @@
+#############################################################################################################
+### printer.cfg overrides for the V-Core 4.1 IDEX 600
+###
+### These three things CANNOT be expressed in printer-definition.json, because
+### the shared template v-core-4-1-idex.ts emits them *after* the size include
+### and therefore wins over 600.cfg. printer.cfg is included at the top of the
+### generated config, so its sections come last and do win.
+###
+### Paste this into your printer.cfg, below [include RatOS.cfg].
+#############################################################################################################
+
+#------------------------------------------------------------------------------------------------------------
+# 1) VAOC camera positions
+#
+# The template computes these from the size:
+#     xcontrolpoint = size.x / 2 - 37.5   ->  262.5
+#     ycontrolpoint = size.y + 30.5       ->  630.5
+#
+# The +30.5 is hardcoded against the stock bedMargin.y[1] of 33.65. This machine
+# has bedMargin.y[1] = 65, so the computed Y lands ~32mm short of the real
+# camera. These are per-machine calibration values anyway - keep them here.
+#------------------------------------------------------------------------------------------------------------
+[gcode_macro _VAOC]
+variable_expected_camera_x_position: 265.380
+variable_expected_camera_y_position: 662.253
+
+#------------------------------------------------------------------------------------------------------------
+# 2) Z minimum
+#
+# The template hardcodes `min: -7` for the Z rail. This machine uses -5.
+#------------------------------------------------------------------------------------------------------------
+[stepper_z]
+position_min: -5
+
+#------------------------------------------------------------------------------------------------------------
+# 3) IDEX carriage safe distance
+#
+# The template hardcodes `safeDistance: 55`. This machine uses 60.
+#------------------------------------------------------------------------------------------------------------
+[dual_carriage]
+safe_distance: 60
+
+#------------------------------------------------------------------------------------------------------------
+# 4) T1 parking position (optional)
+#
+# The configurator computes this as size.x + bedMargin.x[1] - 2 = 673, which is
+# 1mm past the 672 currently running on the machine. Uncomment if 673 is too
+# close to the endstop. T0 needs no override: -bedMargin.x[0] + 2 = -73 already
+# matches exactly.
+#------------------------------------------------------------------------------------------------------------
+#[gcode_macro T1]
+#variable_parking_position: 672
