@@ -23,7 +23,8 @@ Fix every `[FAIL]` first. Then, independently of the script:
 3. Record the current `~/klipper` commit and branch. Write them down; that is
    your rollback target.
 4. **The fork's deployment branch has to exist.** `build-configurator-fork.sh`
-   produces the *source* branch only; the deployment branch is not automated —
+   pushes the *source* branch; the fork's own `publish-kalico.yml` then builds
+   the app and publishes the deployment branch. Wait for that run to go green —
    see `docs/MAINTENANCE.md`, "The deployment branch". Do not start stage 1
    until this returns a ref:
 
