@@ -104,7 +104,11 @@ git -C "$CHECKOUT" add klippy/extras/bed_mesh.py klippy/extras/gcode_macro.py
 # (base, patch). The resulting SHA is what moonraker.conf pins, so a rebuild
 # that produces a different SHA for identical inputs is a real problem.
 BASE_DATE="$(git -C "$CHECKOUT" show -s --format=%aI "$BASE")"
-git -C "$CHECKOUT" -c user.name="RatOS-Kalico build" \
+# BOTH dates. `commit --date=` sets only the AUTHOR date; the committer date
+# still comes from the clock, and it is part of the SHA -- so pinning one of
+# them leaves the build non-reproducible while looking like it is fixed.
+GIT_COMMITTER_DATE="$BASE_DATE" \
+	git -C "$CHECKOUT" -c user.name="RatOS-Kalico build" \
 	-c user.email="noreply@localhost" \
 	commit --quiet --date="$BASE_DATE" -m "RatOS compatibility for Kalico: bed_mesh and gcode_macro
 

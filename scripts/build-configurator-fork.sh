@@ -59,6 +59,26 @@ if [ -z "$KALICO_COMMIT" ]; then
 fi
 say "Pinning klipper to $KALICO_COMMIT"
 
+# The pinned commit MUST already be published, or the printer is pointed at a
+# commit that does not exist: klipper-fork-migration.sh's `git cat-file -e`
+# fails and it exits 7, while moonraker just reports klipper "up to date"
+# forever. Since the fork branch is rebuilt as a single commit each time, the
+# invariant is simply that we pin its current tip.
+say "Checking $KALICO_COMMIT is published on $FORK_KALICO_BRANCH"
+REMOTE_TIP="$(git ls-remote "$FORK_KALICO_URL" "refs/heads/$FORK_KALICO_BRANCH" | cut -f1)"
+if [ -z "$REMOTE_TIP" ]; then
+	die "$FORK_KALICO_URL has no branch $FORK_KALICO_BRANCH.
+    Run scripts/build-kalico-fork.sh --push first."
+fi
+if [ "$REMOTE_TIP" != "$KALICO_COMMIT" ]; then
+	die "would pin $KALICO_COMMIT, but $FORK_KALICO_BRANCH is at $REMOTE_TIP.
+    The printer would be pointed at a commit that is not published: the
+    migration exits 7 and moonraker reports klipper 'up to date' forever.
+    Run scripts/build-kalico-fork.sh --push to publish it, or pass
+    --kalico-commit $REMOTE_TIP to pin what is already there."
+fi
+note "published tip matches"
+
 CHECKOUT="$WORK_DIR/configurator"
 ensure_checkout "$CHECKOUT" "$UPSTREAM_CONFIGURATOR_URL" "$UPSTREAM_CONFIGURATOR_BRANCH"
 warn_if_upstream_moved "$CHECKOUT" "$VERIFIED_CONFIGURATOR_COMMIT" "RatOS-configurator"
