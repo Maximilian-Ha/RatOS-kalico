@@ -13,7 +13,10 @@ REPO_ROOT="$(cd -- "$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/.." &>/de
 source "$REPO_ROOT/fork.conf"
 
 WORK_DIR="${WORK_DIR:-$REPO_ROOT/.work}"
-mkdir -p "$WORK_DIR"
+
+# Not created on source: preflight.sh runs on the printer and promises to
+# change nothing. The build scripts create it themselves.
+ensure_work_dir() { mkdir -p "$WORK_DIR"; }
 
 say() { printf '==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
@@ -72,6 +75,26 @@ warn_if_upstream_moved() {
 		note "The transforms assert their own anchors and will abort rather than"
 		note "half-apply, but re-read docs/MAINTENANCE.md before shipping this."
 	fi
+}
+
+# ensure_fork_remote <dir> <url>
+#
+# Register the fork as a real named remote and fetch it.
+#
+# This is not cosmetic. `git push --force-with-lease` with no explicit expected
+# value derives its lease from a remote-tracking ref. Pushing to a bare URL
+# gives it nothing to derive from, so git silently treats the lease as
+# satisfied -- which is the opposite of what --force-with-lease is for, and
+# would let a build clobber a branch another machine had moved.
+ensure_fork_remote() {
+	local dir="$1" url="$2"
+	if git -C "$dir" remote get-url fork >/dev/null 2>&1; then
+		git -C "$dir" remote set-url fork "$url"
+	else
+		git -C "$dir" remote add fork "$url"
+	fi
+	# A brand new fork repository has no refs yet; that is not an error.
+	git -C "$dir" fetch --quiet fork 2>/dev/null || true
 }
 
 # confirm <prompt>

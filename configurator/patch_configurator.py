@@ -406,13 +406,23 @@ def t_resonance_generator(text, cfg):
     RatOS calls the 3-argument form, which raises TypeError on Kalico, so
     GENERATE_RESONANCES is dead today.
 
-    We dispatch to Kalico's `_run_test`, not to its 5-argument `run_test`.
-    `run_test` wraps the body in `suspend_limits(...)`, which would fight
-    RatOS' own SET_VELOCITY_LIMIT handling in this very module; `_run_test` is
-    byte-for-byte the Klipper body RatOS was written against.
+    Call Kalico's real five-argument `run_test`, with the same arguments
+    Kalico's own caller uses. Do NOT reach for its private `_run_test`: Kalico
+    hoisted the input-shaper disable and the SET_VELOCITY_LIMIT overrides *out*
+    of `_run_test` and into `run_test`'s `suspend_limits()` context manager, so
+    calling `_run_test` directly would run the whole sweep with input shaping
+    still enabled and at the printer's normal accel limits -- silently, and the
+    resulting shaper graphs would be wrong rather than obviously broken.
 
-    Also make the toolhead position unpack defensive: Kalico's toolhead carries
-    an extra_axes mechanism, so a fixed 4-tuple unpack is a latent break.
+    `self.generator` is a SweepingVibrationsTestGenerator, which exposes the
+    inner VibrationPulseTestGenerator as `.vibration_generator` -- that is where
+    freq_end and accel_per_hz live. (The sweeping generator itself has no
+    get_accel_per_hz.)
+
+    Separately, keep the whole position vector rather than unpacking a fixed
+    four-tuple: Kalico's toolhead can append extra axes to commanded_pos. The
+    two move() calls have to carry that tail through, otherwise
+    `commanded_pos[:] = move.end_pos` truncates it.
     """
     text = sub_once(
         text,
@@ -427,24 +437,37 @@ def t_resonance_generator(text, cfg):
     text = sub_once(
         text,
         "        X, Y, Z, E = toolhead.get_position()\n",
-        "        # %s: Kalico's toolhead can carry extra axes, so slice rather\n"
-        "        # than unpack a fixed 4-tuple.\n"
-        "        X, Y, Z = toolhead.get_position()[:3]\n" % MARKER,
+        "        # %s: Kalico's toolhead can carry extra axes beyond X/Y/Z/E, so\n"
+        "        # keep the whole vector and only name the three we move.\n"
+        "        pos = list(toolhead.get_position())\n"
+        "        X, Y, Z = pos[:3]\n" % MARKER,
         "resonance_generator: get_position unpack",
+    )
+    text = sub_once(
+        text,
+        "            toolhead.move([nX, nY, Z, E], max_v)\n"
+        "            toolhead.move([X, Y, Z, E], max_v)\n",
+        "            # %s: carry every axis past Y at its current value.\n"
+        "            toolhead.move([nX, nY] + pos[2:], max_v)\n"
+        "            toolhead.move(list(pos), max_v)\n" % MARKER,
+        "resonance_generator: move calls keep the extra-axis tail",
     )
     text = sub_once(
         text,
         "            self.executor.run_test(test_seq, axis, gcmd)",
         "            # %s: Kalico widened run_test to\n"
-        "            # (test_seq, axis, freq_end, accel_per_hz, gcmd) and wraps the\n"
-        "            # body in suspend_limits(), which would fight the velocity\n"
-        "            # limits this module sets itself. Its _run_test is the\n"
-        "            # unchanged Klipper body -- use that when present.\n"
-        "            _run = getattr(self.executor, \"_run_test\", None)\n"
-        "            if _run is not None and len(\n"
+        "            # (test_seq, axis, freq_end, accel_per_hz, gcmd). Its\n"
+        "            # suspend_limits() wrapper is what disables the input shaper\n"
+        "            # and raises the accel limits for the sweep, so the public\n"
+        "            # form is required -- calling the private _run_test would\n"
+        "            # measure with shaping still on.\n"
+        "            if len(\n"
         "                inspect.signature(self.executor.run_test).parameters\n"
         "            ) > 3:\n"
-        "                _run(test_seq, axis, gcmd)\n"
+        "                _vg = self.generator.vibration_generator\n"
+        "                self.executor.run_test(\n"
+        "                    test_seq, axis, _vg.freq_end, _vg.accel_per_hz, gcmd\n"
+        "                )\n"
         "            else:\n"
         "                self.executor.run_test(test_seq, axis, gcmd)" % MARKER,
         "resonance_generator: run_test dispatch",

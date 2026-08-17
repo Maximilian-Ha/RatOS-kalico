@@ -30,14 +30,16 @@ while [ $# -gt 0 ]; do
 	--kalico-commit)
 		shift
 		KALICO_COMMIT="${1:-}"
+		[ -n "$KALICO_COMMIT" ] || die "--kalico-commit needs a sha"
 		;;
 	--base)
 		shift
 		BASE="${1:-}"
+		[ -n "$BASE" ] || die "--base needs a commit-ish"
 		;;
 	--no-sweeping-period) EXTRA_ARGS+=(--no-sweeping-period) ;;
 	-h | --help)
-		sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,/^[^#]/p' "$0" | sed -n 's/^# \{0,1\}//p'
 		exit 0
 		;;
 	*) die "unknown option: $1" ;;
@@ -47,6 +49,7 @@ done
 
 need git
 need python3
+ensure_work_dir
 
 if [ -z "$KALICO_COMMIT" ]; then
 	[ -f "$WORK_DIR/kalico-commit.txt" ] ||
@@ -82,11 +85,19 @@ bash -n "$CHECKOUT/configuration/scripts/klipper-fork-migration.sh" ||
 	die "klipper-fork-migration.sh is not valid bash after patching"
 bash -n "$CHECKOUT/configuration/scripts/ratos-common.sh" ||
 	die "ratos-common.sh is not valid bash after patching"
-python3 -m py_compile \
+PYTHONPYCACHEPREFIX="$WORK_DIR/pycache" python3 -m py_compile \
 	"$CHECKOUT/configuration/klippy/kinematics/ratos_hybrid_corexy.py" \
 	"$CHECKOUT/configuration/klippy/ratos_homing.py" \
 	"$CHECKOUT/configuration/klippy/resonance_generator.py" ||
 	die "patched klippy modules do not compile"
+# py_compile cannot see a name that is read but never bound -- exactly the
+# shape of bug a re-shaped assignment leaves behind, and on a printer Klippy
+# escalates a NameError to an emergency shutdown.
+python3 "$REPO_ROOT/tests/check_undefined_names.py" \
+	"$CHECKOUT/configuration/klippy/kinematics/ratos_hybrid_corexy.py" \
+	"$CHECKOUT/configuration/klippy/ratos_homing.py" \
+	"$CHECKOUT/configuration/klippy/resonance_generator.py" ||
+	die "a patched klippy module reads a name nothing binds"
 
 # The migration script re-reads this value with an awk parser that demands
 # exactly 40 hex characters and, thanks to an ERR-trap interaction, reports a
@@ -98,7 +109,18 @@ PINNED="$(awk '/^\[update_manager klipper\]/{f=1} f && /^pinned_commit:/{gsub(/^
 note "moonraker.conf pins the built Kalico commit, and awk-parses cleanly"
 
 say "Committing"
-git -C "$CHECKOUT" add -A
+# Explicit paths, not -A: the checkout is a 400 MB tree and anything stray in
+# it would ship to printers.
+git -C "$CHECKOUT" add \
+	configuration/scripts/klipper-fork-migration.sh \
+	configuration/scripts/ratos-common.sh \
+	configuration/moonraker.conf \
+	configuration/klippy/kinematics/ratos_hybrid_corexy.py \
+	configuration/klippy/ratos_homing.py \
+	configuration/klippy/resonance_generator.py
+# -u: stage modifications to tracked .cfg only (the sweeping_period edits),
+# never sweep in an untracked file that happens to be lying around.
+git -C "$CHECKOUT" add -u -- '*.cfg'
 git -C "$CHECKOUT" -c user.name="RatOS-Kalico build" \
 	-c user.email="noreply@localhost" \
 	commit --quiet -m "RatOS 2.1 on Kalico
@@ -140,7 +162,10 @@ CONFIGURATOR_COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"
 
 if [ "$PUSH" -eq 1 ]; then
 	say "Pushing to $FORK_CONFIGURATOR_URL"
-	git -C "$CHECKOUT" push --force-with-lease "$FORK_CONFIGURATOR_URL" \
+	# Named remote, so --force-with-lease has a remote-tracking ref to derive
+	# its lease from; against a bare URL the lease is silently a no-op.
+	ensure_fork_remote "$CHECKOUT" "$FORK_CONFIGURATOR_URL"
+	git -C "$CHECKOUT" push --force-with-lease fork \
 		"$FORK_CONFIGURATOR_BRANCH:$FORK_CONFIGURATOR_BRANCH"
 	note "pushed $FORK_CONFIGURATOR_BRANCH"
 	warn "This is the SOURCE branch. Moonraker pulls"

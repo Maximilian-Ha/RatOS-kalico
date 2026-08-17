@@ -79,24 +79,39 @@ def LookupMultiRail(config):
     return _Rail(name, RANGES[name])
 ''' % (RANGES,)
 
+# Mirrors Kalico's idex_modes: a rail carries a mode, and get_primary_rail
+# scans for whichever one is currently PRIMARY. A stub that just returns rail0
+# would make the dual-carriage check below pass no matter what set_position
+# does, because rail0 is what the else-branch picks anyway.
 IDEX_STUB = '''
+INACTIVE = "INACTIVE"
+PRIMARY = "PRIMARY"
+
 class DualCarriagesRail:
     def __init__(self, rail, axis, active):
         self.rail = rail
         self.axis = axis
-        self.active = active
+        self.mode = (INACTIVE, PRIMARY)[bool(active)]
     def get_rail(self):
         return self.rail
 
 class DualCarriages:
     def __init__(self, config, rail0, rail1, axis):
-        self.rails = [rail0, rail1]
+        self.dc = [rail0, rail1]
         self.axis = axis
-        self.primary = rail0
     def get_primary_rail(self):
-        return self.primary
+        for rail in self.dc:
+            if rail.mode == PRIMARY:
+                return rail
+        return self.dc[0]
+    def set_primary(self, index):
+        for i, rail in enumerate(self.dc):
+            rail.mode = PRIMARY if i == index else INACTIVE
     def get_status(self, eventtime=None):
-        return {"carriage_0": "PRIMARY", "carriage_1": "INACTIVE"}
+        return {
+            "carriage_0": self.dc[0].mode,
+            "carriage_1": self.dc[1].mode,
+        }
     def home(self, homing_state):
         pass
 '''
@@ -308,15 +323,47 @@ def main(argv):
 
     # The dual carriage rail must still be reachable, because set_position
     # special-cases it and a broken branch there only shows up mid-toolchange.
+    # The dual-carriage branch of set_position only shows its work when the
+    # SECOND carriage is primary -- with carriage 0 primary it picks the same
+    # rail the else-branch would, so testing only that state proves nothing.
     def dual_carriage_rail_wired():
         assert kin.dc_module is not None, "no dual carriage module was built"
+
+        kin.dc_module.set_primary(0)
         kin.limits = [(1.0, -1.0)] * 3
         kin.set_position([0.0, 0.0, 0.0, 0.0], "x")
         assert kin.limits[0] == RANGES["stepper_x"], (
-            "with carriage 0 primary, homing x must take stepper_x's range"
+            "with carriage 0 primary, homing x must take stepper_x's range, got %r"
+            % (kin.limits[0],)
         )
 
-    check("dual carriage primary rail is used for the x limit", dual_carriage_rail_wired)
+        kin.dc_module.set_primary(1)
+        kin.limits = [(1.0, -1.0)] * 3
+        kin.set_position([0.0, 0.0, 0.0, 0.0], "x")
+        assert kin.limits[0] == RANGES["dual_carriage"], (
+            "with carriage 1 primary, homing x must take the dual_carriage "
+            "rail's range, got %r -- the dc_module branch of set_position is "
+            "not being taken" % (kin.limits[0],)
+        )
+        kin.dc_module.set_primary(0)
+
+    check("set_position follows the active dual carriage", dual_carriage_rail_wired)
+
+    # Nothing else asserts that the new position actually reaches the rails --
+    # the whole first loop of set_position could be deleted and every other
+    # check would still pass.
+    def set_position_propagates_to_rails():
+        for rail in kin.rails:
+            rail.position = None
+        newpos = [10.0, 20.0, 30.0, 40.0]
+        kin.set_position(newpos, "xyz")
+        for rail in kin.rails:
+            assert rail.position == list(newpos), (
+                "rail %s did not receive the new position (got %r)"
+                % (rail.get_name(), rail.position)
+            )
+
+    check("set_position propagates the position to every rail", set_position_propagates_to_rails)
 
     def status_reports_homed_axes():
         kin.set_position([0.0, 0.0, 0.0, 0.0], "xyz")

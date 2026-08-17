@@ -27,7 +27,10 @@ has to do it explicitly or Klippy fails to import.
 numpy-2 build path on Debian Bookworm is unverified.
 
 **Check before migrating:** `scripts/preflight.sh` reports the installed numpy
-and jinja2 versions and whether pygam imports.
+and jinja2 versions and whether pygam imports. Note that a bare
+`import numpy, jinja2, pygam` passing means nothing here — the versions RatOS
+ships today import perfectly well and are exactly the ones Kalico cannot use.
+Read the reported versions, do not just check for a clean exit.
 
 ---
 
@@ -50,12 +53,16 @@ non-`None` `.exception`.
 
 ---
 
-## 3. Kalico retracts a third time after homing
+## 3. Kalico retracts a second time after homing
 
-Kalico's `home_rails` adds a retract after the second homing pass that upstream
-Klipper does not do. It is gated only on `hi.retract_dist` — there is no
-dedicated option — so the only lever is `homing_retract_dist: 0`, which also
-removes the accuracy-improving second pass.
+Kalico's `home_rails` retracts twice — once before the second homing pass
+(`homing.py:339`, which upstream Klipper also does at `homing.py:201`) and once
+*after* it (`homing.py:382`, `# Retract (again)`), which upstream does not.
+Upstream retracts once; Kalico retracts twice.
+
+The extra one is gated only on `hi.retract_dist` — there is no dedicated
+option — so the only lever is `homing_retract_dist: 0`, which also removes the
+accuracy-improving second pass.
 
 The gating is subtler than it looks: the *outer* gate uses a widened
 `retract_dist` that `min_home_dist` can raise, so an explicitly set
@@ -81,9 +88,12 @@ leaves that state stale — so Kalico can decide a current change is needed when
 it is not, and rewrite currents mid-home.
 
 The user has seven `[autotune_tmc]` sections including `dual_carriage`. There is
-also a reported Kalico bug for TMC2209 on CAN toolboards
-([kalico#829](https://github.com/KalicoCrew/kalico/issues/829)), which is exactly
-this printer's two Orbitool O2s toolboards.
+a reported Kalico bug in this area
+([kalico#829](https://github.com/KalicoCrew/kalico/issues/829)), but it was
+filed against TMC2209 drivers on **CAN** toolboards, which this printer is not:
+its Orbitool O2s toolboards are USB serial and run TMC2240
+(`RatOS_4.1.cfg:565`, `:586`). The TMC2209s here are the three Z steppers on the
+Octopus. Listed as prior art, not as a match.
 
 Not a blocker — autotune loads and runs on Kalico — but the interaction is
 unverified and it is a *motion* risk, not a cosmetic one.
@@ -186,6 +196,13 @@ Recorded so nobody re-litigates them:
 - **Beacon.** `BeaconProbeWrapper` implements both the legacy protocol Kalico
   drives and the newer session API, and `run_probe(self, gcmd, *args, **kwargs)`
   absorbs Kalico's extra positional argument.
+
+  With one caveat worth stating: `[update_manager beacon]` is `channel: dev`
+  with **no `pinned_commit`**, so beacon.py is auto-updated on the printer by an
+  updater this fork does not control. On stock RatOS that is harmless — its
+  Klipper has the session API beacon prefers. Here the *legacy* path is
+  load-bearing, so a future beacon release that drops it would break probing
+  with no warning. Consider pinning it.
 - **`klipper_tmc_autotune`.** Ships `from klippy.extras import tmc  # Kalico`
   and indexes `get_current()` rather than unpacking it.
 - **Flat imports.** Kalico's `klippy/compat.py` is a *generic* meta-path hook —
@@ -197,3 +214,26 @@ Recorded so nobody re-litigates them:
 - **Config option coverage.** Among sections Kalico implements, `log_points` was
   the only unknown option in the whole resolved include tree — and the port
   introduces it.
+
+---
+
+## 11. The Moonraker recovery alias does not fully work
+
+`fork.conf` publishes a `master` branch alongside the fork's Kalico branch so
+Moonraker's Recover buttons have something to check out. That helps, but it does
+not fully close the hole.
+
+The migration script never repoints `origin` — it adds a second remote and
+resets the branch. So after migration `~/klipper` still has
+`origin = https://github.com/Klipper3d/klipper.git` and a local `master` left
+over from the image, pointing at vanilla Klipper.
+
+Consequences: **Hard Recover** resolves its clone URL from `origin`, so it would
+reinstall stock Klipper. **Soft Recover** checks out the stale local `master`.
+The alias branch only helps a machine that was cloned from the fork in the first
+place.
+
+Fixing it properly means repointing `origin` in the migration script, which
+changes what Moonraker's klipper entry sees — an interaction that has not been
+verified. Until then: do not use Mainsail's Recover buttons on a migrated
+machine. Re-run `ratos-update.sh` instead.

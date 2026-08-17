@@ -29,6 +29,7 @@ run() {
 
 need git
 need python3
+ensure_work_dir
 
 # --- 1. build both forks from pristine upstream ----------------------------
 
@@ -96,11 +97,19 @@ for f in \
 	python3 -m py_compile "$f" && printf 'ok: %s\n' "$(basename "$f")" || FAILED=1
 done
 
+printf '\n--- unbound names ---\n'
+python3 "$SCRIPT_DIR/check_undefined_names.py" \
+	"$CONF/configuration/klippy/kinematics/ratos_hybrid_corexy.py" \
+	"$CONF/configuration/klippy/ratos_homing.py" \
+	"$CONF/configuration/klippy/resonance_generator.py" ||
+	FAILED=1
+
 # --- 5. the patcher is idempotent ------------------------------------------
 
 printf '\n--- idempotency ---\n'
 if python3 "$REPO_ROOT/configurator/patch_configurator.py" \
 	--checkout "$CONF" \
+	--kalico-upstream-url "$UPSTREAM_KALICO_URL" \
 	--kalico-url "$FORK_KALICO_URL" \
 	--kalico-branch "$FORK_KALICO_BRANCH" \
 	--kalico-commit "$KALICO_COMMIT" \

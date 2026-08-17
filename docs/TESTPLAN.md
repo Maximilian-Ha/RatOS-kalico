@@ -22,6 +22,17 @@ Fix every `[FAIL]` first. Then, independently of the script:
    machine. Copy them into `printer.cfg`. See `docs/RISKS.md` §7.
 3. Record the current `~/klipper` commit and branch. Write them down; that is
    your rollback target.
+4. **The fork's deployment branch has to exist.** `build-configurator-fork.sh`
+   produces the *source* branch only; the deployment branch is not automated —
+   see `docs/MAINTENANCE.md`, "The deployment branch". Do not start stage 1
+   until this returns a ref:
+
+   ```bash
+   git ls-remote <fork-url> v2.1.x-kalico-deployment
+   ```
+
+   Pointing Moonraker at a source branch leaves the configurator service with
+   nothing to serve.
 
 ---
 
@@ -44,7 +55,22 @@ Then check, before starting Klipper:
 ```bash
 git -C ~/klipper log --oneline -1        # the fork's Kalico commit
 grep APP_NAME ~/klipper/klippy/__init__.py   # must say Kalico
-~/klippy-env/bin/python -c "import numpy, jinja2, pygam; print('deps ok')"
+~/klippy-env/bin/python -c "import numpy,jinja2;print('numpy',numpy.__version__,'jinja2',jinja2.__version__)"
+~/klippy-env/bin/python -c "import pygam; print('pygam ok')"
+```
+
+**Read the versions, do not just check for a clean exit.** RatOS' own numpy 1.x
+and jinja2 2.11.3 import perfectly and are exactly what Kalico cannot run on;
+Kalico asks for `numpy~=2.2` and `Jinja2>=3.1.6`.
+
+Nothing installs them for you. The repo switch happens inside
+`klipper-fork-migration.sh`, not through Moonraker's updater, so Moonraker never
+sees a requirements delta. If the versions are wrong you install Kalico's set
+yourself — and understand first that this is the jinja2 jump `docs/RISKS.md` §1
+calls the largest open risk, because every RatOS macro is a jinja2 template:
+
+```bash
+~/klippy-env/bin/pip install -r ~/klipper/scripts/klippy-requirements.txt
 ```
 
 **Klippy must start and report ready.** If it does not, the log names the
@@ -81,7 +107,7 @@ Each step, one at a time, watching the machine.
 | 1 | `M84` | No error. This is the `clear_homing_state` path — it is called on *every* M84 and raises `AttributeError` on an unpatched kinematics. |
 | 2 | `G28 X` | Homes, stops at the endstop. |
 | 3 | `G28 Y` | Same. |
-| 4 | `G28 Z` | **The risky one.** Kalico retracts a third time after the second pass. Beacon's model is only valid in a narrow band. Be ready to stop. See `docs/RISKS.md` §3. |
+| 4 | `G28 Z` | **The risky one.** Kalico adds a second retract, after the second homing pass, that upstream Klipper does not do. Beacon's model is only valid in a narrow band. Be ready to stop. See `docs/RISKS.md` §3. |
 | 5 | `G28` (cold, Z unhomed) | Exercises `ratos_homing`'s z-hop path with `z_hop: 15` — the `set_position(homing_axes="z")` fix. |
 | 6 | `SET_KINEMATIC_POSITION` | The `force_move` → `clear_homing_state` path RatOS' own belt-tension and shaper macros use. |
 | 7 | `T0`, `T1`, then COPY and MIRROR | IDEX. Confirm **both carriages move the direction you expect** before anything else. |
@@ -124,8 +150,13 @@ SAVE_CONFIG        # with a 58x58 mesh pending — this is the save_profile path
 
 - `BEACON_RATOS_CALIBRATE` (contact and scan)
 - `PROBE PROBE_METHOD=contact`
-- `GENERATE_SHAPER_GRAPHS` — exercises the `resonance_generator` fix. On an
-  unpatched module this is a straight `TypeError`.
+- `GENERATE_RESONANCES AXIS=X FREQ_START=10 FREQ_END=100` — the only command
+  that reaches the `run_test` arity shim. Unpatched, this is a straight
+  `TypeError` from Kalico's five-parameter `ResonanceTestExecutor.run_test`.
+- `OSCILLATE AXIS=X FREQ=60 TIME=1` — the other patched path in that module,
+  and what the configurator's Analysis page drives.
+- `GENERATE_SHAPER_GRAPHS` — RatOS' own graph macro. Note this one does *not*
+  go through `resonance_generator.py`.
 - `MEASURE_COREXY_BELT_TENSION`
 - Adaptive heat soak — the pygam path
 - A short print with `START_PRINT` / `END_PRINT`

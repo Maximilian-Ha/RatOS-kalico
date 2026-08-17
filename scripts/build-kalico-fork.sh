@@ -31,7 +31,7 @@ while [ $# -gt 0 ]; do
 		[ -n "$BASE" ] || die "--base needs a commit-ish"
 		;;
 	-h | --help)
-		sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,/^[^#]/p' "$0" | sed -n 's/^# \{0,1\}//p'
 		exit 0
 		;;
 	*) die "unknown option: $1" ;;
@@ -41,6 +41,7 @@ done
 
 need git
 need python3
+ensure_work_dir
 
 PATCH="$REPO_ROOT/kalico/0001-ratos-compat-bed_mesh-gcode_macro.patch"
 [ -f "$PATCH" ] || die "missing $PATCH"
@@ -60,8 +61,11 @@ say "Building $FORK_KALICO_BRANCH on top of $BASE"
 git -C "$CHECKOUT" checkout --quiet -B "$FORK_KALICO_BRANCH" "$BASE"
 
 say "Applying the RatOS compatibility port"
-if ! git -C "$CHECKOUT" apply --check "$PATCH" 2>/tmp/ratos-kalico-apply.err; then
-	cat /tmp/ratos-kalico-apply.err >&2
+APPLY_ERR=""
+APPLY_RC=0
+APPLY_ERR="$(git -C "$CHECKOUT" apply --check "$PATCH" 2>&1 >/dev/null)" || APPLY_RC=$?
+if [ "$APPLY_RC" -ne 0 ]; then
+	printf '%s\n' "$APPLY_ERR" >&2
 	die "the RatOS port does not apply to Kalico at $BASE.
     Kalico has changed bed_mesh.py or gcode_macro.py where the port anchors.
     Re-derive it -- see kalico/PROVENANCE.md and docs/MAINTENANCE.md. Do NOT
@@ -96,9 +100,13 @@ fi
 
 say "Committing"
 git -C "$CHECKOUT" add klippy/extras/bed_mesh.py klippy/extras/gcode_macro.py
+# Pin the dates to the base commit so the build is a pure function of
+# (base, patch). The resulting SHA is what moonraker.conf pins, so a rebuild
+# that produces a different SHA for identical inputs is a real problem.
+BASE_DATE="$(git -C "$CHECKOUT" show -s --format=%aI "$BASE")"
 git -C "$CHECKOUT" -c user.name="RatOS-Kalico build" \
 	-c user.email="noreply@localhost" \
-	commit --quiet -m "RatOS compatibility for Kalico: bed_mesh and gcode_macro
+	commit --quiet --date="$BASE_DATE" -m "RatOS compatibility for Kalico: bed_mesh and gcode_macro
 
 Ports the whole delta of Rat-OS/klipper ratos/v2.1.x onto Kalico. RatOS 2.1
 does not run on stock Klipper; it runs on that fork, whose entire difference
@@ -148,7 +156,11 @@ printf '%s\n' "$KALICO_COMMIT" >"$WORK_DIR/kalico-commit.txt"
 
 if [ "$PUSH" -eq 1 ]; then
 	say "Pushing to $FORK_KALICO_URL"
-	git -C "$CHECKOUT" push --force-with-lease "$FORK_KALICO_URL" \
+	# Via a named remote, so --force-with-lease has a remote-tracking ref to
+	# derive its lease from. --atomic keeps a rejected lease from leaving the
+	# recovery branch pointing somewhere the tracked branch does not.
+	ensure_fork_remote "$CHECKOUT" "$FORK_KALICO_URL"
+	git -C "$CHECKOUT" push --atomic --force-with-lease fork \
 		"$FORK_KALICO_BRANCH:$FORK_KALICO_BRANCH" \
 		"$FORK_KALICO_RECOVERY_BRANCH:$FORK_KALICO_RECOVERY_BRANCH"
 	note "pushed $FORK_KALICO_BRANCH and $FORK_KALICO_RECOVERY_BRANCH"

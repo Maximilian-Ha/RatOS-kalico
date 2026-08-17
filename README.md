@@ -5,9 +5,12 @@ instead of Rat-OS/klipper.
 
 > ### Status: builds green, **never run on a printer**
 >
-> Every patch in here applies to today's upstream, compiles, and passes the
-> behavioural tests in `tests/`. None of it has touched hardware. Two pieces of
-> infrastructure are also still missing — see [What is not done](#what-is-not-done).
+> Every patch in here applies to today's upstream and passes the behavioural
+> tests in `tests/`. Those tests cover the kinematics contract and prove the
+> firmware port does not change the computed mesh; they do **not** cover every
+> patched hunk, and `tests/` says which. None of it has touched hardware. Two
+> pieces of infrastructure are also still missing — see
+> [What is not done](#what-is-not-done).
 >
 > Do not put this on a printer you need this week.
 
@@ -79,8 +82,9 @@ The hard blockers, each verified against the real sources:
   yielding those RatOS commits exist for. Proven not to change the computed
   mesh: `tests/test_bed_mesh_port.py`, 13/13.
 - **Kinematics.** `supports_dual_carriage`, axis-name `set_position`,
-  `clear_homing_state`. Proven: `tests/test_kinematics.py`, 11/11 patched
-  against 1/11 unpatched.
+  `clear_homing_state`. Proven: `tests/test_kinematics.py`, 12/12 patched —
+  and the same suite run against unpatched RatOS fails, which `run-all.sh`
+  asserts so the test cannot decay into a tautology.
 - **`resonance_generator`.** Kalico widened `ResonanceTestExecutor.run_test`
   from 3 to 5 parameters, so `GENERATE_RESONANCES` raises `TypeError` today.
 - **`gcode_shell_command.py`.** Kalico ships and git-tracks its own; RatOS'

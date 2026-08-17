@@ -55,7 +55,8 @@ if git -C "$KLIPPER_DIR" rev-parse --git-dir >/dev/null 2>&1; then
 	ORIGIN="$(git -C "$KLIPPER_DIR" remote get-url origin 2>/dev/null || echo '(none)')"
 	ok "origin: $ORIGIN"
 	ok "HEAD:   $(git -C "$KLIPPER_DIR" rev-parse HEAD)"
-	ok "branch: $(git -C "$KLIPPER_DIR" branch --show-current 2>/dev/null || echo '(detached)')"
+	BR="$(git -C "$KLIPPER_DIR" branch --show-current 2>/dev/null)"
+	ok "branch: ${BR:-(detached HEAD)}"
 
 	# klipper-fork-migration.sh aborts with KLIPPER_UNCOMMITTED_CHANGES and
 	# never recovers on its own. RatOS' own extension symlinks are excluded via
@@ -156,7 +157,9 @@ echo
 # --- config that regeneration would destroy ---------------------------------
 
 say "Generated config"
-GEN="$(find "$PRINTER_DATA_DIR/config" -maxdepth 1 -name 'RatOS*.cfg' 2>/dev/null | head -1)"
+# `find | head` under pipefail exits non-zero when the directory is missing,
+# which would kill the whole script before it prints its verdict.
+GEN="$(find "$PRINTER_DATA_DIR/config" -maxdepth 1 -name 'RatOS*.cfg' 2>/dev/null | head -1 || true)"
 if [ -n "$GEN" ]; then
 	ok "generated config: $(basename "$GEN")"
 	attn "This file says it is generated and will be overwritten. If you have
