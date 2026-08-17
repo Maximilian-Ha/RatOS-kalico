@@ -18,10 +18,14 @@ than half-applying: a half-patched update script is far worse than an
 un-patched one, because the printer keeps running either way but only one of
 them is diagnosable.
 
+It also installs the fork's own publish workflow and removes upstream's, because
+Moonraker pulls a CI-built deployment branch rather than the source branch --
+without that workflow the fork has no branch a printer can be pointed at.
+
 Usage:
     patch_configurator.py --checkout DIR --kalico-url URL --kalico-branch NAME
-                          --kalico-commit SHA
-                          --configurator-url URL --deployment-branch NAME
+                          --kalico-commit SHA --configurator-url URL
+                          --source-branch NAME --deployment-branch NAME
                           [--check] [--no-sweeping-period]
 
 Exit codes:
@@ -565,6 +569,54 @@ FILE_TRANSFORMS = [
 ]
 
 
+WORKFLOW_TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "publish-kalico.yml.in")
+WORKFLOW_DEST = ".github/workflows/publish-kalico.yml"
+
+
+def workflow_plan(checkout, cfg):
+    """Install the fork's publish workflow and disarm upstream's.
+
+    Moonraker does not pull the source branch -- it pulls a branch carrying a
+    built Next.js app, which RatOS produces in CI. Without an equivalent
+    workflow the fork has no such branch, and pointing a printer at the source
+    branch leaves the configurator service with nothing to serve.
+
+    Upstream's own publish workflows are removed from the fork. They target
+    RatOS' branch names, and leaving live workflows in a fork that push to
+    branches nobody is watching is a trap, not a feature.
+
+    Returns (writes, deletes); either may be empty.
+    """
+    with open(WORKFLOW_TEMPLATE, "r") as handle:
+        text = handle.read()
+
+    html_url = cfg["configurator_fork_url"]
+    if html_url.endswith(".git"):
+        html_url = html_url[: -len(".git")]
+
+    for token, value in (
+        ("@@SOURCE_BRANCH@@", cfg["source_branch"]),
+        ("@@DEPLOYMENT_BRANCH@@", cfg["deployment_branch"]),
+        ("@@FORK_URL_HTML@@", html_url),
+    ):
+        if token not in text:
+            raise AnchorError(
+                "publish-kalico.yml.in no longer contains %s -- the template "
+                "and this installer have drifted apart" % token
+            )
+        text = text.replace(token, value)
+
+    writes = [(os.path.join(checkout, WORKFLOW_DEST), text)]
+
+    deletes = []
+    wf_dir = os.path.join(checkout, ".github", "workflows")
+    if os.path.isdir(wf_dir):
+        for name in sorted(os.listdir(wf_dir)):
+            if name.startswith("publish") and name != os.path.basename(WORKFLOW_DEST):
+                deletes.append(os.path.join(wf_dir, name))
+    return writes, deletes
+
+
 def find_resonance_tester_files(checkout):
     """Every shipped .cfg that opens a [resonance_tester] section."""
     hits = []
@@ -594,6 +646,7 @@ def main(argv=None):
     parser.add_argument("--kalico-branch", required=True)
     parser.add_argument("--kalico-commit", required=True)
     parser.add_argument("--configurator-url", required=True)
+    parser.add_argument("--source-branch", required=True)
     parser.add_argument("--deployment-branch", required=True)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--no-sweeping-period", action="store_true")
@@ -616,6 +669,7 @@ def main(argv=None):
         "kalico_fork_branch": args.kalico_branch,
         "kalico_commit": args.kalico_commit,
         "configurator_fork_url": args.configurator_url,
+        "source_branch": args.source_branch,
         "deployment_branch": args.deployment_branch,
     }
 
@@ -668,7 +722,25 @@ def main(argv=None):
             sys.stderr.write("ERROR: %s\n" % exc)
             return 1
 
+    try:
+        wf_writes, wf_deletes = workflow_plan(checkout, cfg)
+    except AnchorError as exc:
+        sys.stderr.write("ERROR: %s\n" % exc)
+        return 1
+    for path, text in wf_writes:
+        existing = None
+        if os.path.isfile(path):
+            with open(path, "r") as handle:
+                existing = handle.read()
+        if existing != text:
+            pending.append((path, text))
+
     if args.check:
+        if wf_deletes:
+            print("%d upstream publish workflow(s) still present" % len(wf_deletes))
+            for path in wf_deletes:
+                print("  %s" % os.path.relpath(path, checkout))
+            return 1
         if pending:
             print("%d file(s) need patching, %d already patched" % (len(pending), already))
             for path, _text in pending:
@@ -677,7 +749,14 @@ def main(argv=None):
         print("checkout is fully patched (%d files carry the %s marker)" % (already, MARKER))
         return 0
 
+    for path in wf_deletes:
+        os.unlink(path)
+        print("removed %s (upstream publish workflow)" % os.path.relpath(path, checkout))
+
     for path, text in pending:
+        parent = os.path.dirname(path)
+        if parent and not os.path.isdir(parent):
+            os.makedirs(parent)
         with open(path, "w") as handle:
             handle.write(text)
         print("patched %s" % os.path.relpath(path, checkout))

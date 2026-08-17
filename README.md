@@ -47,20 +47,47 @@ This repo holds no vendored copies. `scripts/build-*.sh` fetch pristine
 upstream and derive the fork branches, so following a new RatOS or Kalico
 release is a re-run, not a merge.
 
-## Quick start
+## Setting it up
+
+**1. Check the fork still builds against today's upstream.** Needs nothing but
+git, python3 and network:
 
 ```bash
-# 1. Prove the whole thing still builds against current upstream.
 tests/run-all.sh
+```
 
-# 2. Create the two fork repositories on GitHub, then set their URLs
-#    in fork.conf.
+**2. Create the two fork repositories.** This is the one manual step — on
+github.com, press *Fork* on each:
 
-# 3. Build and publish.
-scripts/build-kalico-fork.sh --push
-scripts/build-configurator-fork.sh --push
+| Fork this | into | keep the default name |
+|---|---|---|
+| `KalicoCrew/kalico` | your account | `kalico` |
+| `Rat-OS/RatOS-configurator` | your account | `RatOS-configurator` |
 
-# 4. On the printer, before changing anything:
+Then check the URLs in [`fork.conf`](fork.conf) match. They are pre-filled for
+`Maximilian-Ha`; nothing else in the repo hardcodes them.
+
+**3. Build and publish both fork branches.** Order matters — `moonraker.conf`
+has to pin the Kalico commit, so the firmware fork goes first:
+
+```bash
+scripts/build-kalico-fork.sh --push        # ratos-kalico/v2.1.x + master alias
+scripts/build-configurator-fork.sh --push  # v2.1.x-kalico
+```
+
+**4. Let CI build the deployment branch.** The push in step 3 triggers the
+fork's own `publish-kalico.yml`, which builds the Next.js app, renames `src/` to
+`app/` and publishes `v2.1.x-kalico-deployment`. Wait for it to go green — the
+printer is pointed at *that* branch, not at the source branch. If Actions are
+disabled on a new fork, enable them once under the repository's Actions tab.
+
+```bash
+git ls-remote <your-fork> v2.1.x-kalico-deployment   # must return a ref
+```
+
+**5. On the printer, before changing anything:**
+
+```bash
 scripts/preflight.sh
 ```
 
@@ -106,11 +133,12 @@ the earlier analysis got them wrong in both directions:
 
 ## What is not done
 
-1. **The deployment branch.** Moonraker pulls `~/ratos-configurator` from a
-   branch carrying a *built* Next.js app — RatOS CI builds `src/`, renames it to
-   `app/` and force-pushes. `build-configurator-fork.sh` produces the source
-   branch only. Without the deployment branch the configurator service has
-   nothing to serve. See [`docs/MAINTENANCE.md`](docs/MAINTENANCE.md).
+1. **The deployment branch has never been built.** The fork ships its own
+   `publish-kalico.yml` — forked from RatOS' workflow, with the
+   `last-successful-commit-action` dependency removed because it breaks on a
+   fork's first run — and `build-configurator-fork.sh` installs it and removes
+   upstream's. But no CI run has ever executed it here, so the pnpm build is
+   unproven. Expect to babysit the first run.
 2. **No install/rollback script.** Deliberately. Preflight is read-only;
    switching a printer over is written up in `docs/TESTPLAN.md` as steps you
    run and check, because an unattended script that half-migrates a printer is

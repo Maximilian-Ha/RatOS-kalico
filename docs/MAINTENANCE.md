@@ -53,38 +53,45 @@ likely; that file has been stable.
 
 ---
 
-## The deployment branch — the one piece not automated
+## The deployment branch
 
 Moonraker does **not** pull `~/ratos-configurator` from the source branch. It
-pulls `primary_branch`, which upstream sets to `v2.1.x-deployment-2`, and that
-is a build artifact branch produced by
-`.github/workflows/publish-v2.1.x.yml`:
+pulls `primary_branch`, and that is a build artifact branch: RatOS CI builds
+`src/` with pnpm, deletes the source-only directories, renames `src/` → `app/`,
+rewrites `RATOS_SCRIPT_DIR` in `.env` from `/src/scripts` to `/app/scripts`, and
+force-pushes the result. The systemd unit's `WorkingDirectory` points into
+`app/` and `ExecStart` is `pnpm start`, so a source branch leaves the
+configurator service with nothing to serve.
 
-1. build `src/` with pnpm
-2. delete the source-only directories
-3. rename `src/` → `app/`
-4. rewrite `RATOS_SCRIPT_DIR` in `.env` from `/src/scripts` to `/app/scripts`
-5. force-push the whole tree to `staging/<branch>`, which a human then
-   fast-forwards to the public branch
+The fork carries its own workflow for this. The template lives at
+`configurator/publish-kalico.yml.in`; `patch_configurator.py` substitutes the
+branch names from `fork.conf`, installs it as
+`.github/workflows/publish-kalico.yml`, and **removes upstream's publish
+workflows** — they target RatOS' branch names, and a live workflow in a fork
+pushing to branches nobody watches is a trap.
 
-The systemd unit's `WorkingDirectory` points into `app/` and `ExecStart` is
-`pnpm start`. Point Moonraker at a source branch and the configurator service
-has nothing to serve.
+Three deliberate differences from upstream's:
 
-`build-configurator-fork.sh` produces the **source** branch only. To finish:
+- **Triggered by a push to the source branch**, plus `workflow_dispatch` — not
+  by a `workflow_run` of "CI". A fresh fork has no CI history to key off, and
+  the source branch here is *rebuilt* by `build-configurator-fork.sh` rather
+  than developed on.
+- **No `last-successful-commit-action`.** It looks up prior runs *by workflow
+  filename*, so on a fork's first publish it finds nothing and the commit-count
+  step produces garbage. The commit message names the source commit instead.
+- **Publishes straight to the deployment branch.** Upstream goes via `staging/`
+  and has a human fast-forward it; for a single-owner fork that is ceremony
+  without a reviewer.
 
-- fork that workflow, changing `target-branch` and `src-branch` to the fork's
-  names and the compare URL in the commit message; **or**
-- run the equivalent build by hand and force-push the result to
-  `$FORK_CONFIGURATOR_DEPLOYMENT_BRANCH`.
+It also asserts, before publishing, that `configuration/scripts/ratos-common.sh`
+and `configuration/klippy/requirements.txt` survived and that `app/.env` no
+longer points at `/src/scripts`. Moonraker hard-errors on the first two, and
+that error surfaces on the printer rather than in CI.
 
-One trap: the workflow uses `last-successful-commit-action`, which looks up
-prior runs *by workflow filename*. A fresh fork has no prior successful run, so
-the commit-count step misbehaves on the very first publish.
-
-Moonraker also hard-errors if `configuration/scripts/ratos-common.sh` or
-`configuration/klippy/requirements.txt` is missing from the branch — so whatever
-you publish must keep `configuration/` intact.
+**Caveats.** The "Delete files not needed in deployment" list is copied verbatim
+from upstream and is coupled to RatOS' source layout — if a release moves
+directories under `src/`, that list moves with it. And this workflow has never
+actually run: the pnpm build is unproven here. Watch the first run.
 
 ---
 
@@ -106,6 +113,11 @@ which branch to track — `primary_branch` is not overridable for the built-in
 klipper entry and defaults to `master`. Its Recover button checks that branch
 out; Hard Recover `rmtree`s `~/klipper` and clones it. Without a `master`
 pointing at the same commit, those buttons strand the printer.
+
+That is a *partial* mitigation only, and `docs/RISKS.md` §11 spells out why: the
+migration never repoints `origin`, so a machine that was migrated rather than
+cloned from the fork keeps `origin = Klipper3d` and a stale local `master`. Do
+not use Mainsail's Recover buttons on a migrated printer.
 
 **Why `origin` is left alone.** Upstream's migration script never rewrites
 `origin` — it adds a second remote and resets the branch. The fork keeps that

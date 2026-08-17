@@ -77,6 +77,7 @@ python3 "$REPO_ROOT/configurator/patch_configurator.py" \
 	--kalico-branch "$FORK_KALICO_BRANCH" \
 	--kalico-commit "$KALICO_COMMIT" \
 	--configurator-url "$FORK_CONFIGURATOR_URL" \
+	--source-branch "$FORK_CONFIGURATOR_BRANCH" \
 	--deployment-branch "$FORK_CONFIGURATOR_DEPLOYMENT_BRANCH" \
 	"${EXTRA_ARGS[@]}"
 
@@ -108,6 +109,14 @@ PINNED="$(awk '/^\[update_manager klipper\]/{f=1} f && /^pinned_commit:/{gsub(/^
 	die "moonraker.conf pins '$PINNED' but we built '$KALICO_COMMIT'"
 note "moonraker.conf pins the built Kalico commit, and awk-parses cleanly"
 
+[ -f "$CHECKOUT/.github/workflows/publish-kalico.yml" ] ||
+	die "the fork's publish workflow was not installed"
+if compgen -G "$CHECKOUT/.github/workflows/publish[-.]*" >/dev/null &&
+	[ "$(basename "$(compgen -G "$CHECKOUT/.github/workflows/publish[-.]*" | head -1)")" != "publish-kalico.yml" ]; then
+	die "an upstream publish workflow survived -- it would push to RatOS' branch names"
+fi
+note "publish workflow installed, upstream's removed"
+
 say "Committing"
 # Explicit paths, not -A: the checkout is a 400 MB tree and anything stray in
 # it would ship to printers.
@@ -121,6 +130,8 @@ git -C "$CHECKOUT" add \
 # -u: stage modifications to tracked .cfg only (the sweeping_period edits),
 # never sweep in an untracked file that happens to be lying around.
 git -C "$CHECKOUT" add -u -- '*.cfg'
+# The fork's publish workflow, plus the removal of upstream's.
+git -C "$CHECKOUT" add -A -- .github/workflows
 git -C "$CHECKOUT" -c user.name="RatOS-Kalico build" \
 	-c user.email="noreply@localhost" \
 	commit --quiet -m "RatOS 2.1 on Kalico

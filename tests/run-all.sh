@@ -114,6 +114,7 @@ if python3 "$REPO_ROOT/configurator/patch_configurator.py" \
 	--kalico-branch "$FORK_KALICO_BRANCH" \
 	--kalico-commit "$KALICO_COMMIT" \
 	--configurator-url "$FORK_CONFIGURATOR_URL" \
+	--source-branch "$FORK_CONFIGURATOR_BRANCH" \
 	--deployment-branch "$FORK_CONFIGURATOR_DEPLOYMENT_BRANCH" \
 	--check; then
 	printf 'ok: re-running the patcher is a no-op\n'
