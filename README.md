@@ -5,14 +5,22 @@ instead of Rat-OS/klipper.
 
 > ### Status: builds green, **never run on a printer**
 >
-> Every patch in here applies to today's upstream and passes the behavioural
-> tests in `tests/`. Those tests cover the kinematics contract and prove the
-> firmware port does not change the computed mesh; they do **not** cover every
-> patched hunk, and `tests/` says which. None of it has touched hardware. Two
-> pieces of infrastructure are also still missing — see
-> [What is not done](#what-is-not-done).
+> The forks are built and published, and the deployment branch CI is green.
+> Every patch applies to today's upstream and passes the behavioural tests in
+> `tests/` — those cover the kinematics contract and prove the firmware port
+> does not change the computed mesh, but they do **not** cover every patched
+> hunk. None of it has touched hardware, and the klippy venv upgrade is
+> untested. See [What is not done](#what-is-not-done).
 >
 > Do not put this on a printer you need this week.
+
+**Published state**
+
+| | |
+|---|---|
+| `Maximilian-Ha/kalico` | `ratos-kalico/v2.1.x` = `6e9840b8`, `master` alias at the same commit |
+| `Maximilian-Ha/RatOS-configurator` | `v2.1.x-kalico` = `002bb385`, pinning `6e9840b8` |
+| deployment branch | `v2.1.x-kalico-deployment` = `ac4097ad`, built by CI and verified to carry `app/`, `configuration/scripts/ratos-common.sh`, `configuration/klippy/requirements.txt` and an `app/.env` pointing at `/app/scripts` |
 
 ---
 
@@ -133,21 +141,15 @@ the earlier analysis got them wrong in both directions:
 
 ## What is not done
 
-1. **The deployment branch has never been built.** The fork ships its own
-   `publish-kalico.yml` — forked from RatOS' workflow, with the
-   `last-successful-commit-action` dependency removed because it breaks on a
-   fork's first run — and `build-configurator-fork.sh` installs it and removes
-   upstream's. But no CI run has ever executed it here, so the pnpm build is
-   unproven. Expect to babysit the first run.
-2. **No install/rollback script.** Deliberately. Preflight is read-only;
+1. **No install/rollback script.** Deliberately. Preflight is read-only;
    switching a printer over is written up in `docs/TESTPLAN.md` as steps you
    run and check, because an unattended script that half-migrates a printer is
    worse than no script.
-3. **The klippy venv.** Kalico needs numpy 2.x and jinja2 ≥3.1.6; RatOS' image
+2. **The klippy venv.** Kalico needs numpy 2.x and jinja2 ≥3.1.6; RatOS' image
    pins numpy ≤1.23.4 and jinja2 2.11.3. That jinja2 jump changes template
    semantics for *every* RatOS macro. Untested. This is the largest unquantified
    risk in the project — [`docs/RISKS.md`](docs/RISKS.md).
-4. **Nothing is hardware-verified.** Kalico's own `bed_mesh` regression tests
+3. **Nothing is hardware-verified.** Kalico's own `bed_mesh` regression tests
    could not be run here either: this build environment blocks PyPI, so numpy
    and jinja2 could not be installed.
 
