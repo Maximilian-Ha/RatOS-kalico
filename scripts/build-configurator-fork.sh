@@ -88,6 +88,13 @@ if [ -z "$BASE" ]; then
 fi
 say "Building $FORK_CONFIGURATOR_BRANCH on top of $BASE"
 git -C "$CHECKOUT" checkout --quiet -B "$FORK_CONFIGURATOR_BRANCH" "$BASE"
+# Actually remove strays, rather than asserting they are absent. `checkout -B`
+# resets the index but leaves untracked files on disk, and the staging step
+# below is `add -A` -- so anything left under these directories by an earlier
+# run gets published. That is how three __pycache__/*.pyc reached the branch
+# that ships to printers. Scoped to the two directories the fork writes, so a
+# pnpm node_modules under src/ is never touched.
+git -C "$CHECKOUT" clean --quiet -ffdx -- configuration .github
 
 say "Applying the Kalico delta"
 python3 "$REPO_ROOT/configurator/patch_configurator.py" \
@@ -151,12 +158,11 @@ if [ -d "$P600" ]; then
 fi
 
 say "Committing"
-# Stage everything the patcher touched. An explicit path list is how the
-# numpy pin silently failed to ship once already: the transform wrote the file,
-# the list did not name it, and the commit went out without it while the
-# working tree looked correct. The checkout was reset to $BASE and cleaned
-# before patching, so scoping to the two directories the fork writes is enough
-# and cannot sweep in strays.
+# Stage everything the patcher touched. An explicit path list is how the numpy
+# pin silently failed to ship once already: the transform wrote the file, the
+# list did not name it, and the commit went out without it while the working
+# tree looked correct. Safe to use -A here only because these two directories
+# were cleaned above -- without that, -A publishes strays.
 git -C "$CHECKOUT" add -A -- configuration .github
 
 git -C "$CHECKOUT" -c user.name="RatOS-Kalico build" \

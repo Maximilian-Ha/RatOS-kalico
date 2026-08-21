@@ -161,7 +161,10 @@ if [ -x "$PY" ]; then
 		ok "pip check: no broken dependencies"
 	else
 		attn "pip check reports problems:"
-		"$PY" -m pip check 2>&1 | sed 's/^/         /' | head -8
+		# Guarded: under set -euo pipefail this pipeline's non-zero status would
+		# abort the script before the beacon gate and the verdict ever print --
+		# and it is non-zero precisely when the venv is broken.
+		{ "$PY" -m pip check 2>&1 | sed 's/^/         /' | head -8; } || true
 	fi
 else
 	fail "no klippy venv at $HOME/klippy-env"

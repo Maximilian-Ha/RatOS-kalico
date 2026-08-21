@@ -18,9 +18,16 @@ instead of Rat-OS/klipper.
 
 | | |
 |---|---|
-| `Maximilian-Ha/kalico` | `ratos-kalico/v2.1.x` = `6e9840b8`, `master` alias at the same commit |
-| `Maximilian-Ha/RatOS-configurator` | `v2.1.x-kalico` = `002bb385`, pinning `6e9840b8` |
-| deployment branch | `v2.1.x-kalico-deployment` = `ac4097ad`, built by CI and verified to carry `app/`, `configuration/scripts/ratos-common.sh`, `configuration/klippy/requirements.txt` and an `app/.env` pointing at `/app/scripts` |
+| `Maximilian-Ha/kalico` | `ratos-kalico/v2.1.x`, plus a `master` alias at the same commit |
+| `Maximilian-Ha/RatOS-configurator` | `v2.1.x-kalico` (source) and `v2.1.x-kalico-deployment` (CI-built, what the printer pulls) |
+
+Commit hashes are deliberately not listed here — they change on every rebuild
+and a stale hash is worse than none. Read the live state instead:
+
+```bash
+git ls-remote https://github.com/Maximilian-Ha/kalico.git ratos-kalico/v2.1.x
+git ls-remote https://github.com/Maximilian-Ha/RatOS-configurator.git v2.1.x-kalico-deployment
+```
 
 ---
 

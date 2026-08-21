@@ -91,8 +91,11 @@ built on **Raspberry Pi OS / Armbian Bullseye**, i.e. **Python 3.9**, and the
 venv is created with a bare `virtualenv -p python3` at image build. There is no
 dist-upgrade anywhere in the update scripts.
 
-On 3.9, Kalico's markers select numpy 2.0.2 rather than 2.2.2 — same conflict —
-and on the recommended 32-bit armhf image numpy 2.x may have no wheel at all.
+*Upstream* Kalico's markers select numpy 2.0.2 on 3.9 rather than the 2.2.2 they
+select on 3.10+ — still numpy 2, still the same conflict. The fork's branch
+replaces that line with `numpy>=1.26.4,<2 ; python_full_version < '3.13'`, so a
+printer built from this fork resolves to 1.26.x. Note also that on the
+recommended 32-bit armhf image numpy 2.x may have no wheel at all.
 `scripts/preflight.sh` now prints the OS, architecture and interpreter first,
 because every number here depends on them.
 

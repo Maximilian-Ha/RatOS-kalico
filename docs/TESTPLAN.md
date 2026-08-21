@@ -39,8 +39,18 @@ Fix every `[FAIL]` first. Then, independently of the script:
 
 ## Stage 1 — switch the firmware, do not move anything
 
-Point `~/ratos-configurator` at the fork's deployment branch, restart the
-configurator and Moonraker, then run RatOS' own updater:
+Point `~/ratos-configurator` at the fork's deployment branch. The **local
+branch name must equal** the `primary_branch` in the fork's `moonraker.conf`,
+or Moonraker can never pull the configurator again:
+
+```bash
+git -C ~/ratos-configurator remote set-url origin https://github.com/Maximilian-Ha/RatOS-configurator.git
+git -C ~/ratos-configurator fetch origin v2.1.x-kalico-deployment
+git -C ~/ratos-configurator checkout -B v2.1.x-kalico-deployment origin/v2.1.x-kalico-deployment
+sudo systemctl restart ratos-configurator moonraker
+```
+
+Then run RatOS' own updater:
 
 ```bash
 sudo ~/printer_data/config/RatOS/scripts/ratos-update.sh
@@ -60,27 +70,35 @@ grep APP_NAME ~/klipper/klippy/__init__.py   # must say Kalico
 ~/klippy-env/bin/python -c "import numpy,scipy,jinja2,pygam;print(numpy.__version__,scipy.__version__,jinja2.__version__,pygam.__version__)"
 ```
 
-**numpy must be 1.x here, not 2.x.** RatOS pins `pygam==0.9.1`, which caps
-scipy below 1.12, and no such scipy supports numpy 2 — so numpy 2 makes
-`import pygam` fail, and Kalico takes the printer down at config load over
-`[beacon_adaptive_heat_soak]`. The fork pins `numpy>=1.26.4,<2` in both of the
-requirements files it owns for exactly this reason. `docs/RISKS.md` §1 has the
-full graph.
+**Do not upgrade the venv unless something above actually failed to import.**
 
-> **Do not run a bare `pip install -r ~/klipper/scripts/klippy-requirements.txt`.**
+Nothing on the printer installs Kalico's requirements as part of the switch —
+`klipper-fork-migration.sh` has no pip step, and Moonraker's klipper entry only
+installs on a requirements *delta*, which the out-of-band repo switch never
+produces. So the venv you already have is the venv Kalico will run on, and that
+is usually fine: jinja2 2.11.3 does run Kalico's template engine, and numpy is
+already present (the image installs it, and pygam raises it further).
+
+**If numpy is 2.x, stop.** RatOS pins `pygam==0.9.1`, which caps scipy below
+1.12, and no such scipy supports numpy 2 — so `import pygam` fails and Kalico
+takes the printer down at config load over `[beacon_adaptive_heat_soak]`. The
+fork pins `numpy>=1.26.4,<2` in both requirements files it owns for exactly
+this reason. `docs/RISKS.md` §1 has the full graph.
+
+> **Never run a bare `pip install -r ~/klipper/scripts/klippy-requirements.txt`.**
 > An earlier version of this document said to. On the fork's Kalico branch that
-> file is already pinned correctly, so there is nothing to do; against upstream
+> file is already pinned correctly and there is nothing to do; against upstream
 > Kalico it installs numpy 2 and breaks the machine, exiting 0 while it does.
 
-If you do need to touch the venv, resolve before you install — one dry run over
+If you do have to touch the venv, resolve before installing — one dry run over
 *all four* requirements files turns a silent downgrade into a loud
 `ResolutionImpossible`, without putting the venv at risk:
 
 ```bash
-~/klippy-env/bin/python -m pip download --only-binary=:all: -d /tmp/wheels \
-  -r ~/klipper/scripts/klippy-requirements.txt \
-  -r ~/ratos-configurator/configuration/klippy/requirements.txt \
-  -r ~/beacon/requirements.txt \
+~/klippy-env/bin/python -m pip download --only-binary=:all: -d /tmp/wheels \\
+  -r ~/klipper/scripts/klippy-requirements.txt \\
+  -r ~/ratos-configurator/configuration/klippy/requirements.txt \\
+  -r ~/beacon/requirements.txt \\
   -r ~/klipper_linear_movement_analysis/requirements.txt
 ```
 
@@ -92,6 +110,18 @@ absent.
 sudo systemctl stop klipper moonraker
 tar -C "$HOME" -cf "$HOME/klippy-env.pre-kalico.tar" klippy-env
 ```
+
+### Two things that happen by themselves, and one that does not
+
+- **The C helper rebuilds itself.** `klippy/chelper` compares source mtimes
+  against `c_helper.so` and recompiles on the first start after the tree
+  changes. Expect a slower first boot; it needs `gcc`, which RatOS has.
+- **MCU firmware is not reflashed by the migration.** RatOS reflashes MCUs from
+  a git *post-merge* hook, and the migration uses `checkout`/`reset`, which do
+  not fire it. Kalico's own migration guide does not call for reflashing, and
+  nothing here found a hard host/MCU version gate — but if anything
+  MCU-related misbehaves, reflash deliberately from the Kalico tree through
+  RatOS' normal flashing flow before looking anywhere else.
 
 **Klippy must start and report ready.** If it does not, the log names the
 section. Nothing below matters until this is green.
@@ -207,10 +237,15 @@ they are.
 
 There is no rollback script, on purpose. The steps are:
 
+Mirror the stage 1 switch exactly — including the **branch name**. A
+`reset --hard` alone leaves the printer on the fork's local branch with
+`branch.<name>.merge` pointing at a ref upstream does not have, and Moonraker
+can then never pull the configurator again:
+
 ```bash
 git -C ~/ratos-configurator remote set-url origin https://github.com/Rat-OS/RatOS-configurator.git
 git -C ~/ratos-configurator fetch origin v2.1.x-deployment-2
-git -C ~/ratos-configurator reset --hard origin/v2.1.x-deployment-2
+git -C ~/ratos-configurator checkout -B v2.1.x-deployment-2 origin/v2.1.x-deployment-2
 sudo systemctl restart ratos-configurator moonraker
 sudo ~/printer_data/config/RatOS/scripts/ratos-update.sh
 ```
@@ -218,10 +253,12 @@ sudo ~/printer_data/config/RatOS/scripts/ratos-update.sh
 The last command runs the *upstream* migration script again, which pulls
 `~/klipper` back to `Rat-OS/klipper` at its pinned commit.
 
-The klippy venv does **not** roll back with the repos. Restore it from the
-snapshot, and restore it *together with* the checkout — a Kalico tree cannot
-boot on the old venv (jinja2 2.11.3, no numpy), and Moonraker must be stopped
-across the whole window because it validates that the venv path exists:
+If you changed the venv, restore it from the snapshot — and restore it
+*together with* the checkout, so the pair cannot drift. RatOS' klipper pins
+`Jinja2==2.11.3` / `markupsafe==1.1.1` where Kalico's file pins `3.1.6` /
+`2.1.5`, and Moonraker's klipper entry reinstalls whichever tree is checked
+out. Moonraker must be stopped across the whole window, because it validates
+that the venv path exists:
 
 ```bash
 sudo systemctl stop klipper moonraker
