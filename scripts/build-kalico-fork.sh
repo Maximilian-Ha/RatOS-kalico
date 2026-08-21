@@ -162,6 +162,16 @@ Upstream commits ported:
   7dd901ecc5c1ba6c1174bff8895ac14f26b26988
   2817b348e23c779b68ae5f27f2b9b9af8cfcf0da"
 
+# Nothing may be left behind. If the patcher wrote a file the commit did not
+# take, the working tree still looks right while the published branch is wrong
+# -- which is exactly how the numpy pin went missing.
+LEFTOVER="$(git -C "$CHECKOUT" status --porcelain)"
+if [ -n "$LEFTOVER" ]; then
+	printf '%s\n' "$LEFTOVER" >&2
+	die "files changed by the build were not committed (listed above).
+    The published branch would not match what was built."
+fi
+
 KALICO_COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"
 
 # Moonraker's built-in klipper updater cannot be told which branch to track:

@@ -104,6 +104,23 @@ python3 "$SCRIPT_DIR/check_undefined_names.py" \
 	"$CONF/configuration/klippy/resonance_generator.py" ||
 	FAILED=1
 
+# --- 5. the published tree is what was built -------------------------------
+
+printf '\n--- committed tree ---\n'
+for repo_path in "$KALICO:scripts/klippy-requirements.txt:numpy>=1.26.4,<2" \
+	"$CONF:configuration/klippy/requirements.txt:numpy>=1.26.4,<2" \
+	"$CONF:configuration/moonraker.conf:pinned_commit: $KALICO_COMMIT"; do
+	repo="${repo_path%%:*}"; rest="${repo_path#*:}"
+	file="${rest%%:*}"; needle="${rest#*:}"
+	if git -C "$repo" show "HEAD:$file" 2>/dev/null | grep -qF "$needle"; then
+		printf 'ok: %s carries %s\n' "$(basename "$file")" "$needle"
+	else
+		printf '!!! FAILED: the COMMIT for %s does not carry %s\n' "$file" "$needle"
+		printf '    (the working tree may look right while the published branch is wrong)\n'
+		FAILED=1
+	fi
+done
+
 # --- 5. the patcher is idempotent ------------------------------------------
 
 printf '\n--- idempotency ---\n'
