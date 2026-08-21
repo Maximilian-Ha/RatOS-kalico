@@ -70,12 +70,52 @@ short:
 Optionally `[gcode_macro T1] variable_parking_position: 672` — the configurator
 computes 673, one millimetre further out than what runs today.
 
-## Switching the machine over
+## When to switch the machine over
 
-This is **not** required to run Kalico, and it is a separate step from the
-firmware migration. Do the firmware first (`docs/TESTPLAN.md`), get it printing,
-and only then come back to this. Doing both at once means two suspects for
-every symptom.
+A fair question this raises: if the 600 geometry only arrives with the printer
+type, how can the machine print correctly before that?
+
+It already does. **The running geometry does not come from the configurator.**
+
+- `printer.cfg` sets the axis limits directly (`position_min`/`max`/`endstop`
+  for X, the dual carriage, Y and Z), and `printer.cfg` is included at the top
+  of the generated config, so its sections come *last* and win over everything.
+- The 600 includes come from `Custom_settings/600_idex.cfg`.
+- Klippy never reads `printer-definition.json`. Grep the thirteen RatOS klippy
+  modules for it and you get nothing — it is an input to *config generation*,
+  not to the running printer.
+- Nothing regenerates on its own. `ratos-update.sh` does not touch the
+  generated config at all, and `regenerateConfiguration` has exactly one
+  caller: an explicit CLI command.
+
+So the machine boots on Kalico with correct 600 mm limits, from the config it
+runs today, whether or not the configurator has ever heard of a 600.
+
+### The order is not really a free choice
+
+The printer type ships **in the fork's `configuration/`**. Getting it means
+pointing `~/ratos-configurator` at the fork — which is the same action that
+brings Kalico, because Moonraker's pull fires the post-merge hook, which runs
+`ratos-update.sh`, whose first step is the klipper migration.
+
+The type and the firmware therefore **arrive together**. What you actually
+choose is *when you regenerate*, and that is a deliberate, separate action.
+
+### The recommendation, and its cost
+
+Regenerate **after** the firmware is validated, not during.
+
+The reason is not that the config would be wrong before — it would not. It is
+that regenerating swaps a hand-tuned config for a freshly generated one at the
+same moment the firmware changes underneath it. If `G28 Z` then misbehaves you
+cannot tell whether it is Kalico's extra homing retract or a changed limit.
+
+The honest cost of waiting: the generated config is **not** the config you
+validated. After regenerating you have to re-run the geometry-sensitive parts —
+stage 3 in full, and the mesh bounds in stage 4. Budget for that rather than
+assuming one pass covers both.
+
+### The switch itself
 
 1. Select **V-Core 4.1 IDEX 600** in the configurator and walk it through.
 2. In `printer.cfg`, change `[include RatOS_4.1.cfg]` back to
@@ -84,6 +124,7 @@ every symptom.
 4. `Custom_settings/600_idex.cfg` becomes redundant — its values now live in
    `600.cfg` and the definition. Keep `RatOS_4.1.cfg` as a backup until a print
    comes off clean.
+5. Re-run stage 3 and the stage 4 mesh checks from the test plan.
 
 Your own includes — `buffer.cfg`, `LEDS.cfg`, `filament_sensor.cfg`,
 `Filter.cfg`, the nozzle wipe/scrub macros, the chamber heater and the

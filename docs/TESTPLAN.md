@@ -189,12 +189,19 @@ Klipper misbehaves after a rollback, that is where to look; restore
 
 ---
 
-## After it works: the 600 printer type
+## About the 600 printer type
 
-The fork also ships **V-Core 4.1 IDEX 600** as a real printer type, so this
-machine can be generated instead of hand-patched. Do not do that during the
-firmware migration — switching both at once gives every symptom two suspects.
-Once the printer is printing on Kalico, see
+The fork ships **V-Core 4.1 IDEX 600** as a real printer type, and it arrives
+with the firmware — both come from the same fork switch in stage 1.
+
+**It changes nothing about this test plan.** The running 600 mm geometry comes
+from `printer.cfg`, which wins over the generated config, not from the
+configurator; Klippy never reads the printer definition, and nothing regenerates
+by itself. So every stage above runs on the machine's existing, correct config.
+
+Regenerating with the new printer type is a separate, deliberate step — do it
+after the firmware is validated, and then re-run stage 3 and the stage 4 mesh
+checks, because the generated config is not the one you just validated. See
 [`PRINTER-600.md`](PRINTER-600.md).
 
 ---
