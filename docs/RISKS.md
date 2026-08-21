@@ -5,32 +5,115 @@ was actually checked and what was not.
 
 ---
 
-## 1. The klippy virtualenv — jinja2 2.11.3 → 3.1.6
+## 1. The klippy virtualenv — pygam forbids numpy 2
 
-**Unquantified. Largest open risk in the project.**
+**This was originally written up as a jinja2 risk. That was wrong.** The jinja2
+jump is close to a non-risk (see below). The real problem is a dependency graph
+with no solution, and on this printer it is a boot blocker.
 
-Kalico's `pyproject.toml` requires `Jinja2>=3.1.6` and its exported
-`klippy-requirements.txt` pins `jinja2==3.1.6`, `markupsafe==2.1.5`,
-`python-can==4.6.1` and numpy 2.x. RatOS' Klipper base pins `Jinja2==2.11.3`,
-`markupsafe==1.1.1`, `python-can==3.3.4` and no numpy at all; the RatOS image
-separately pins `numpy<=1.23.4` into `~/klippy-env`.
+### The conflict
 
-Every RatOS macro is a jinja2 template. The 2.x → 3.x jump changes template
-semantics. Nobody has run RatOS' macro set against jinja2 3.1.6.
+RatOS pins `pygam==0.9.1`. pygam's own metadata caps `scipy>=1.11.1,<1.12`, and
+every scipy in that window declares `numpy>=1.21.6,<1.28`. So **pygam
+transitively forbids numpy 2.** Kalico asks for `numpy~=2.0`.
 
-Worse, the upgrade happens **out of band**: the repo switch is done by
-`klipper-fork-migration.sh`, not by Moonraker's updater, so Moonraker never
-sees a requirements delta and never installs Kalico's dependencies. Something
-has to do it explicitly or Klippy fails to import.
+There is no version pair that satisfies both. pygam 0.9.1 is the newest tag the
+project has ever published.
 
-`pygam==0.9.1` — which `beacon_adaptive_heat_soak.py` needs — is old and its
-numpy-2 build path on Debian Bookworm is unverified.
+### Why it takes the printer down rather than degrading
 
-**Check before migrating:** `scripts/preflight.sh` reports the installed numpy
-and jinja2 versions and whether pygam imports. Note that a bare
-`import numpy, jinja2, pygam` passing means nothing here — the versions RatOS
-ships today import perfectly well and are exactly the ones Kalico cannot use.
-Read the reported versions, do not just check for a clean exit.
+- Kalico imports numpy at module level in `webhooks.py`, which `printer.py`
+  imports — so numpy is boot-critical for the first time.
+- Kalico eagerly imports **every** module in `klippy/extras/` at startup.
+  `beacon_adaptive_heat_soak.py` imports pygam at module scope.
+- The import error is *stashed*, not raised — and then re-raised the moment the
+  section is loaded. `[beacon_adaptive_heat_soak]` is declared unconditionally
+  in `z-probe/beacon.cfg` and this printer includes it.
+
+So Klippy never reaches ready. And pip will have exited 0, printing the
+conflict only as a trailing warning.
+
+### What the fork does about it
+
+Pins numpy below 2 **in both files it owns**, because they otherwise fight:
+
+| File | Pin |
+|---|---|
+| the Kalico branch's `scripts/klippy-requirements.txt` and `pyproject.toml` | `numpy>=1.26.4,<2` |
+| `configuration/klippy/requirements.txt` | `numpy>=1.26.4,<2`, `scipy>=1.11.1,<1.12`, `pygam==0.9.1` |
+
+Holding numpy at 1.26 is safe for Kalico: its entire numpy surface — `array`,
+`std`, `mean`, `interp`, `cumsum`, `outer`, `zeros`, `maximum`, `float64`,
+`linalg.solve`, `linalg.lstsq`, `lib.stride_tricks.as_strided`, `bool_`,
+`kaiser` and friends — behaves identically on 1.26, and a sweep of Kalico,
+the RatOS klippy modules, beacon and autotune for numpy-2-only APIs
+(`np.trapezoid`, `np.isdtype`, `np.vecdot`, `np.strings`, `np.exceptions`, …)
+returns nothing. Kalico's numpy 2 pin is what its lockfile resolved, not what
+its code needs.
+
+Both sides have to move together. Pinning only one reintroduces the ping-pong.
+
+### Why pinning matters more than a one-off fix
+
+**Four** pip runs write this venv, none with `--no-deps` or a constraint file:
+`ratos-update.sh` on every configurator merge, and moonraker's update_manager
+entries for klipper, beacon and LinearMovementAnalysis — the latter three with
+`-U -r`. Whichever ran last wins.
+
+Note beacon's own `requirements.txt` asks for unbounded `numpy>=1.16.6` and
+`scipy>=1.2.3`. That means **this can break a stock RatOS 2.1 box today**, with
+Kalico nowhere in the picture: a beacon requirements delta, or a Recover with
+dependencies, can pull numpy past what pygam tolerates. The fork does not own
+beacon's file, so that hazard remains.
+
+A hand-fix on the printer is therefore not durable. The pins have to be in the
+repo, which is why they are.
+
+### The way out, once it exists
+
+pygam's `main` branch declares version 0.10.1 with `scipy>=1.11.1,<1.17` and
+`numpy>=1.5.0`, which would dissolve the conflict entirely and allow numpy 2.
+But **no 0.10.1 tag exists** in the repository, and PyPI could not be reached
+from the build environment to confirm a release. Check from the printer:
+
+```bash
+~/klippy-env/bin/pip index versions pygam
+```
+
+If 0.10.1 or later is really published, bump `configuration/klippy/requirements.txt`
+and drop the numpy ceiling on both sides. Its `LinearGAM.__init__` signature is
+unchanged from 0.9.1, so the call in `beacon_adaptive_heat_soak.py` is a drop-in.
+
+### Python version — read it, do not assume it
+
+Every marker-gated pin above branches on the interpreter. RatOS 2.1 images are
+built on **Raspberry Pi OS / Armbian Bullseye**, i.e. **Python 3.9**, and the
+venv is created with a bare `virtualenv -p python3` at image build. There is no
+dist-upgrade anywhere in the update scripts.
+
+On 3.9, Kalico's markers select numpy 2.0.2 rather than 2.2.2 — same conflict —
+and on the recommended 32-bit armhf image numpy 2.x may have no wheel at all.
+`scripts/preflight.sh` now prints the OS, architecture and interpreter first,
+because every number here depends on them.
+
+### What about jinja2?
+
+Close to a non-risk, and worth stating so nobody spends effort there:
+
+- Exactly **two** files in the whole tree import jinja2 — the two
+  `gcode_macro.py` implementations. Beacon, autotune and all thirteen RatOS
+  klippy extensions import zero jinja2 symbols; they go through
+  `load_template()`. Since Kalico is what runs, only Kalico's own needs matter,
+  and it uses a tiny surface that 3.1.6 preserves verbatim.
+- Nobody registers custom filters, tests, globals or extensions anywhere.
+- All 270 `gcode:` templates in the RatOS config tree and this printer's own
+  config were parsed under both 2.11.3 and 3.1.6: **identical AST inventories,
+  identical filter and test counts, zero render differences**, including
+  character-identical error messages.
+
+The one caveat: **never upgrade markupsafe without jinja2**. markupsafe 2.x
+removes `soft_unicode`, which jinja2 2.11.3 needs. A single `pip install -r`
+moves them together; hand-picking lines does not.
 
 ---
 

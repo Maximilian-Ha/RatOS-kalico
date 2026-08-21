@@ -82,43 +82,87 @@ echo
 
 # --- the python environment Kalico needs ------------------------------------
 
+say "Platform"
+# Every version decision below branches on this. RatOS 2.1 images are built on
+# Debian 11 / Raspberry Pi OS Bullseye, which means Python 3.9 -- not the 3.11
+# it is easy to assume. Read it, do not guess it.
+if [ -r /etc/os-release ]; then
+	# shellcheck disable=SC1091
+	ok "os: $(. /etc/os-release && printf '%s' "${PRETTY_NAME:-unknown}")"
+else
+	attn "no /etc/os-release"
+fi
+ok "arch: $(uname -m)"
+echo
+
 say "Klippy virtualenv"
 PY="$HOME/klippy-env/bin/python"
 if [ -x "$PY" ]; then
-	ok "venv python: $PY ($("$PY" --version 2>&1))"
-	for mod in numpy jinja2; do
-		V="$("$PY" -c "import $mod, sys; sys.stdout.write($mod.__version__)" 2>/dev/null || true)"
-		if [ -n "$V" ]; then
-			ok "$mod $V"
-		else
-			fail "$mod not importable in the klippy venv"
-		fi
-	done
-	# Kalico imports EVERY module in klippy/extras at startup, not lazily when a
-	# section appears. beacon_adaptive_heat_soak.py imports pygam at module
-	# level, so a missing pygam is a boot-time failure for everyone -- and it
-	# fails silently, surfacing only later at get_init_function.
-	if "$PY" -c "import pygam" >/dev/null 2>&1; then
-		ok "pygam importable"
-	else
-		fail "pygam is not importable. Kalico eagerly imports all of
-         klippy/extras, so beacon_adaptive_heat_soak.py will fail on every
-         boot -- silently, which is worse."
-	fi
-	NPV="$("$PY" -c "import numpy,sys; sys.stdout.write(numpy.__version__)" 2>/dev/null || true)"
+	ok "venv python: $("$PY" -V 2>&1)"
+
+	ver() { "$PY" -c "import $1,sys;sys.stdout.write(getattr($1,'__version__','?'))" 2>/dev/null || true; }
+	NPV="$(ver numpy)"
+	SPV="$(ver scipy)"
+	JV="$(ver jinja2)"
+	PGV="$(ver pygam)"
+
+	[ -n "$NPV" ] && ok "numpy  $NPV" || fail "numpy is not importable in the klippy venv"
+	[ -n "$SPV" ] && ok "scipy  $SPV" || attn "scipy is not importable (beacon and pygam both want it)"
+	[ -n "$JV" ] && ok "jinja2 $JV" || fail "jinja2 is not importable in the klippy venv"
+	[ -n "$PGV" ] && ok "pygam  $PGV" || PGV=""
+
+	# THE combination that matters. RatOS pins pygam==0.9.1, whose metadata caps
+	# scipy at <1.12, and no scipy below 1.12 supports numpy 2. So numpy 2 and
+	# pygam cannot coexist. On Kalico that is a boot blocker rather than a
+	# nuisance: [beacon_adaptive_heat_soak] imports pygam at module scope and is
+	# declared unconditionally for this printer, so klippy dies at config load.
 	case "$NPV" in
-	2.*) ok "numpy is 2.x, which Kalico requires" ;;
-	"") : ;;
-	*) attn "numpy $NPV -- Kalico pins 2.x. The upgrade must be tested against
-         pygam and the four RatOS modules that use numpy." ;;
+	2.*)
+		if [ -n "$PGV" ]; then
+			fail "numpy $NPV together with pygam $PGV cannot work. pygam caps scipy
+         below 1.12 and no such scipy supports numpy 2. Klippy will fail at
+         config load on [beacon_adaptive_heat_soak]. The fork pins
+         numpy<2 in both requirements files -- see docs/RISKS.md section 1."
+		else
+			attn "numpy $NPV, and pygam is not installed. If pygam is ever installed
+         (ratos-update.sh does it on every configurator merge) this venv
+         breaks. The fork pins numpy<2 for exactly this reason."
+		fi
+		;;
+	1.*)
+		ok "numpy is 1.x -- the combination the fork targets"
+		;;
 	esac
-	JV="$("$PY" -c "import jinja2,sys; sys.stdout.write(jinja2.__version__)" 2>/dev/null || true)"
+
+	# jinja2 is NOT the risk it was once thought to be: only gcode_macro.py
+	# touches the API, and Kalico's own is written for 3.x. But Kalico does
+	# require >= 3.1.6, and markupsafe must move with it.
 	case "$JV" in
 	3.*) ok "jinja2 is 3.x, which Kalico requires" ;;
 	"") : ;;
-	*) attn "jinja2 $JV -- Kalico requires >=3.1.6. That upgrade changes macro
-         template semantics for every RatOS macro. Read docs/RISKS.md." ;;
+	*) attn "jinja2 $JV -- Kalico requires >= 3.1.6. Upgrade it together with
+         markupsafe, never separately: markupsafe 2.x removes soft_unicode and
+         would break jinja2 2.11.3 on its own." ;;
 	esac
+
+	# Kalico eagerly imports EVERY module in klippy/extras at startup, so a
+	# broken pygam is a boot-time problem for every beacon user, not just those
+	# using adaptive heat soak.
+	if "$PY" -c "import pygam" >/dev/null 2>&1; then
+		ok "pygam imports cleanly"
+	elif [ -n "$PGV" ]; then
+		fail "pygam is installed but does not import. Kalico imports all of
+         klippy/extras at startup, so this takes the printer down."
+	else
+		attn "pygam is not installed -- [beacon_adaptive_heat_soak] would fail"
+	fi
+
+	if "$PY" -m pip check >/dev/null 2>&1; then
+		ok "pip check: no broken dependencies"
+	else
+		attn "pip check reports problems:"
+		"$PY" -m pip check 2>&1 | sed 's/^/         /' | head -8
+	fi
 else
 	fail "no klippy venv at $HOME/klippy-env"
 fi

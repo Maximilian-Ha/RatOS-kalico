@@ -482,6 +482,52 @@ def t_resonance_generator(text, cfg):
     return text
 
 
+def t_klippy_requirements(text, cfg):
+    """Write the numpy/scipy constraint down where an installer can see it.
+
+    RatOS pins `pygam==0.9.1`. pygam's own metadata then caps scipy at
+    `>=1.11.1,<1.12`, and every scipy in that window declares
+    `numpy>=1.21.6,<1.28` -- so pygam transitively forbids numpy 2. Nothing on
+    the printer states that: this file names only pygam, beacon's file asks for
+    unbounded `numpy>=1.16.6` / `scipy>=1.2.3`, and the real constraint lives
+    inside pygam's wheel metadata where no installer preserves it across runs.
+
+    That matters because four things pip into the same venv -- this file via
+    ratos-update.sh on every configurator merge, and moonraker's update_manager
+    entries for klipper, beacon and LinearMovementAnalysis, all with `-U -r`.
+    Whichever ran last wins, so a printer can boot fine and then break after an
+    unrelated update, with no config change to blame.
+
+    On Kalico it stops being a drift risk and becomes a boot blocker: Kalico
+    imports numpy at module level in webhooks.py, and this printer loads
+    [beacon_adaptive_heat_soak], whose module imports pygam. Both have to work.
+
+    So pin all three here. The fork's Kalico branch holds numpy below 2 to
+    match; the two files have to agree or they fight on every update.
+    """
+    return sub_once(
+        text,
+        "pygam==0.9.1\n",
+        "pygam==0.9.1\n"
+        "\n"
+        "# %s: pygam 0.9.1 caps scipy at <1.12, and no scipy below 1.12 supports\n"
+        "# numpy 2 -- so pygam transitively forbids it. That constraint is only\n"
+        "# visible inside pygam's metadata, which no installer here preserves, and\n"
+        "# four separate pip runs write this venv. State it explicitly so every one\n"
+        "# of them converges on the same working set instead of fighting.\n"
+        "#\n"
+        "# The fork's Kalico branch holds numpy below 2 to match. Both files have\n"
+        "# to agree; changing one alone reintroduces the ping-pong.\n"
+        "#\n"
+        "# To move to numpy 2 later: a pygam that allows scipy >= 1.13 is needed.\n"
+        "# pygam's main branch declares 0.10.1 with scipy<1.17, but no such release\n"
+        "# is tagged, so verify it exists on PyPI from the printer before trying.\n"
+        "numpy>=1.26.4,<2\n"
+        "scipy>=1.11.1,<1.12\n" % MARKER,
+        "klippy/requirements.txt: pin numpy and scipy",
+    )
+
+
 def t_drop_gcode_shell_extension(text, cfg):
     """Stop registering RatOS' gcode_shell_command.py -- Kalico ships its own.
 
@@ -569,6 +615,7 @@ FILE_TRANSFORMS = [
     ("configuration/klippy/ratos_homing.py", [t_ratos_homing]),
     ("configuration/klippy/resonance_generator.py", [t_resonance_generator]),
     ("configuration/scripts/ratos-common.sh", [t_drop_gcode_shell_extension]),
+    ("configuration/klippy/requirements.txt", [t_klippy_requirements]),
 ]
 
 

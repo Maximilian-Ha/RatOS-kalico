@@ -90,6 +90,17 @@ grep -q '"log_points"' "$CHECKOUT/klippy/extras/bed_mesh.py" ||
 	die "log_points option missing -- Klippy would reject beacon.cfg"
 note "ZMesh reactor parameter, split_delta_z minval and log_points all present"
 
+# RatOS pins pygam==0.9.1, which caps scipy below 1.12, and no such scipy
+# supports numpy 2 -- so a numpy-2 venv makes `import pygam` fail and takes
+# [beacon_adaptive_heat_soak] down at config load. Both requirements files the
+# fork owns must agree on holding numpy below 2. See docs/RISKS.md section 1.
+grep -q "numpy>=1.26.4,<2" "$CHECKOUT/scripts/klippy-requirements.txt" ||
+	die "scripts/klippy-requirements.txt does not hold numpy below 2 -- a numpy-2
+    venv breaks pygam and the printer will not reach ready"
+grep -q "numpy>=1.26.4,<2" "$CHECKOUT/pyproject.toml" ||
+	die "pyproject.toml does not hold numpy below 2"
+note "numpy held below 2 in both requirements and pyproject"
+
 if command -v ruff >/dev/null 2>&1; then
 	(cd "$CHECKOUT" && ruff format --check klippy/extras/bed_mesh.py klippy/extras/gcode_macro.py >/dev/null 2>&1) &&
 		note "ruff format: clean" ||
@@ -99,7 +110,13 @@ else
 fi
 
 say "Committing"
-git -C "$CHECKOUT" add klippy/extras/bed_mesh.py klippy/extras/gcode_macro.py
+# Stage exactly what the patch touches, derived from the patch rather than
+# hardcoded: a widened patch with a hardcoded add list commits some of its
+# files and silently drops the rest.
+PATCH_FILES="$(git -C "$CHECKOUT" apply --numstat "$PATCH" | cut -f3)"
+[ -n "$PATCH_FILES" ] || die "could not determine which files the patch touches"
+# shellcheck disable=SC2086
+git -C "$CHECKOUT" add -- $PATCH_FILES
 # Pin the dates to the base commit so the build is a pure function of
 # (base, patch). The resulting SHA is what moonraker.conf pins, so a rebuild
 # that produces a different SHA for identical inputs is a real problem.

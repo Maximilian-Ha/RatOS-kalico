@@ -54,24 +54,43 @@ take.
 Then check, before starting Klipper:
 
 ```bash
-git -C ~/klipper log --oneline -1        # the fork's Kalico commit
+git -C ~/klipper log --oneline -1            # the fork's Kalico commit
 grep APP_NAME ~/klipper/klippy/__init__.py   # must say Kalico
-~/klippy-env/bin/python -c "import numpy,jinja2;print('numpy',numpy.__version__,'jinja2',jinja2.__version__)"
-~/klippy-env/bin/python -c "import pygam; print('pygam ok')"
+~/klippy-env/bin/pip check
+~/klippy-env/bin/python -c "import numpy,scipy,jinja2,pygam;print(numpy.__version__,scipy.__version__,jinja2.__version__,pygam.__version__)"
 ```
 
-**Read the versions, do not just check for a clean exit.** RatOS' own numpy 1.x
-and jinja2 2.11.3 import perfectly and are exactly what Kalico cannot run on;
-Kalico asks for `numpy~=2.2` and `Jinja2>=3.1.6`.
+**numpy must be 1.x here, not 2.x.** RatOS pins `pygam==0.9.1`, which caps
+scipy below 1.12, and no such scipy supports numpy 2 — so numpy 2 makes
+`import pygam` fail, and Kalico takes the printer down at config load over
+`[beacon_adaptive_heat_soak]`. The fork pins `numpy>=1.26.4,<2` in both of the
+requirements files it owns for exactly this reason. `docs/RISKS.md` §1 has the
+full graph.
 
-Nothing installs them for you. The repo switch happens inside
-`klipper-fork-migration.sh`, not through Moonraker's updater, so Moonraker never
-sees a requirements delta. If the versions are wrong you install Kalico's set
-yourself — and understand first that this is the jinja2 jump `docs/RISKS.md` §1
-calls the largest open risk, because every RatOS macro is a jinja2 template:
+> **Do not run a bare `pip install -r ~/klipper/scripts/klippy-requirements.txt`.**
+> An earlier version of this document said to. On the fork's Kalico branch that
+> file is already pinned correctly, so there is nothing to do; against upstream
+> Kalico it installs numpy 2 and breaks the machine, exiting 0 while it does.
+
+If you do need to touch the venv, resolve before you install — one dry run over
+*all four* requirements files turns a silent downgrade into a loud
+`ResolutionImpossible`, without putting the venv at risk:
 
 ```bash
-~/klippy-env/bin/pip install -r ~/klipper/scripts/klippy-requirements.txt
+~/klippy-env/bin/python -m pip download --only-binary=:all: -d /tmp/wheels \
+  -r ~/klipper/scripts/klippy-requirements.txt \
+  -r ~/ratos-configurator/configuration/klippy/requirements.txt \
+  -r ~/beacon/requirements.txt \
+  -r ~/klipper_linear_movement_analysis/requirements.txt
+```
+
+Snapshot by **copying**, never by moving: three `moonraker.conf` entries declare
+`virtualenv: ~/klippy-env`, and Moonraker raises a config error if that path is
+absent.
+
+```bash
+sudo systemctl stop klipper moonraker
+tar -C "$HOME" -cf "$HOME/klippy-env.pre-kalico.tar" klippy-env
 ```
 
 **Klippy must start and report ready.** If it does not, the log names the
@@ -96,6 +115,22 @@ BEACON_QUERY
 Then confirm in the console that these respond at all: `RatOS`,
 `beacon_adaptive_heat_soak`, `named_offsets`, `beacon_mesh`. Any that were
 silently dead at import will fail here rather than mid-print.
+
+### Does the venv survive an update?
+
+This is the check that decides whether the fix holds or has to be re-applied
+forever. `ratos-update.sh` pip-installs the configurator's requirements on every
+configurator merge, and moonraker re-installs three more files with `-U`:
+
+```bash
+sudo ~/printer_data/config/RatOS/scripts/ratos-update.sh 2>&1 | tee /tmp/ratos-update.log
+~/klippy-env/bin/pip check
+~/klippy-env/bin/pip freeze | grep -Ei 'numpy|scipy|pygam|jinja|markupsafe'
+```
+
+numpy must still be 1.x. If it moved, the pins are being overridden by another
+installer and `docs/RISKS.md` §1 is where to look — do not paper over it on the
+printer, fix it in the fork.
 
 ---
 
@@ -183,9 +218,18 @@ sudo ~/printer_data/config/RatOS/scripts/ratos-update.sh
 The last command runs the *upstream* migration script again, which pulls
 `~/klipper` back to `Rat-OS/klipper` at its pinned commit.
 
-The klippy venv does **not** roll back — jinja2 and numpy stay upgraded. If
-Klipper misbehaves after a rollback, that is where to look; restore
-`~/klippy-env` from the stage 0 backup.
+The klippy venv does **not** roll back with the repos. Restore it from the
+snapshot, and restore it *together with* the checkout — a Kalico tree cannot
+boot on the old venv (jinja2 2.11.3, no numpy), and Moonraker must be stopped
+across the whole window because it validates that the venv path exists:
+
+```bash
+sudo systemctl stop klipper moonraker
+rm -rf "$HOME/klippy-env"
+tar -C "$HOME" -xf "$HOME/klippy-env.pre-kalico.tar"
+~/klippy-env/bin/python ~/klipper/klippy/chelper/__init__.py   # rebuild the C helper
+sudo systemctl start moonraker klipper
+```
 
 ---
 
