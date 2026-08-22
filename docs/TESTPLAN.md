@@ -172,10 +172,28 @@ scripts/verify-kalico.sh
 
 It separates three questions that can disagree — is the code in `~/klipper`
 Kalico, is the *running process* that code, and did it load cleanly. The second
-is the one that matters: `printer.py` writes `App Name: Kalico` into
-`klippy.log` at every start, and `klippy.log` is rotated on start, so what is in
-it now describes the process running now. Stock Klipper never writes that line
-at all.
+is the one that matters: `printer.py:684` writes `App Name: Kalico` into
+`klippy.log` on every process start, and stock Klipper never writes that line at
+all, so its absence is an answer rather than an ambiguity.
+
+Read the **last** such block, not the first. Rotation happens only when klippy
+runs with `-r` (`printer.py:662`), so the log can hold several blocks from
+several starts. `RESTART` and `FIRMWARE_RESTART` reload the config inside the
+existing process and write no block at all; only a service restart does.
+
+If there is no block and you believe the update ran, the problem is upstream of
+klipper: check which configurator the machine is on, because RatOS' own
+migration script will happily report success while keeping the printer on
+Klipper.
+
+```bash
+git -C ~/ratos-configurator remote -v
+git -C ~/ratos-configurator branch --show-current
+grep -n 'RATOS_FORK_URL=' ~/printer_data/config/RatOS/scripts/klipper-fork-migration.sh
+```
+
+That last line is decisive. If it names `Rat-OS/klipper`, the fork never
+reached the machine and what ran was upstream's migration.
 
 Expected new behaviour at this point: Klippy reports itself as **Kalico** in the
 web UI. Mainsail may show an "unofficial remote url" anomaly for klipper. Both

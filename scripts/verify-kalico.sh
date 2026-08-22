@@ -52,19 +52,29 @@ if git -C "$KLIPPER_DIR" rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 say "2. The process that is actually running"
-# printer.py logs this block at every start, and klippy.log is rotated on
-# start, so what is in it now describes the running process -- not a past one.
+# printer.py:684 logs this block on every process start. It is rotated only
+# when klippy runs with -r (printer.py:662), so the log can hold SEVERAL such
+# blocks from several starts -- always read the LAST one, never the first.
+# Note also that RESTART and FIRMWARE_RESTART reload the config inside the same
+# process and write no new block; only a service restart does.
 if [ -r "$LOG" ]; then
-	if grep -q 'App Name: Kalico' "$LOG"; then
-		ok "klippy.log says the running process is Kalico:"
-		grep -A6 'App Name:' "$LOG" | head -7 | sed 's/^/           /'
-	elif grep -q 'App Name:' "$LOG"; then
-		fail "klippy.log reports a different App Name:"
-		grep -m1 -A6 'App Name:' "$LOG" | sed 's/^/           /'
+	LAST="$(grep -n 'App Name:' "$LOG" | tail -1 | cut -d: -f1)"
+	if [ -z "$LAST" ]; then
+		fail "no 'App Name:' line anywhere in klippy.log. Stock Klipper never
+         writes one, so this is still Klipper. If you believe the migration
+         ran, the firmware was not swapped -- check the configurator, not
+         klipper:  git -C ~/ratos-configurator branch --show-current"
 	else
-		fail "no 'App Name:' line in klippy.log. Stock Klipper never writes one,
-         so this is almost certainly still Klipper. Restart klipper and look
-         again:  sudo systemctl restart klipper"
+		BLOCK="$(sed -n "${LAST},$((LAST + 6))p" "$LOG")"
+		if printf '%s' "$BLOCK" | head -1 | grep -q 'App Name: Kalico'; then
+			ok "the most recent start (log line $LAST) was Kalico:"
+			printf '%s\n' "$BLOCK" | sed 's/^/           /'
+		else
+			fail "the most recent start (log line $LAST) was NOT Kalico:"
+			printf '%s\n' "$BLOCK" | sed 's/^/           /'
+		fi
+		COUNT="$(grep -c 'App Name:' "$LOG")"
+		[ "$COUNT" -gt 1 ] && attn "$COUNT start blocks in this log; only the last one above is current"
 	fi
 else
 	fail "cannot read $LOG"
