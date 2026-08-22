@@ -268,19 +268,42 @@ echo
 # --- config that regeneration would destroy ---------------------------------
 
 say "Generated config"
-# `find | head` under pipefail exits non-zero when the directory is missing,
-# which would kill the whole script before it prints its verdict.
-GEN="$(find "$PRINTER_DATA_DIR/config" -maxdepth 1 -name 'RatOS*.cfg' 2>/dev/null | head -1 || true)"
-if [ -n "$GEN" ]; then
-	ok "generated config: $(basename "$GEN")"
-	attn "This file says it is generated and will be overwritten. If you have
-         hand-edited it -- bed size, run_current, parking positions, extra
-         includes -- copy those edits into printer.cfg BEFORE migrating.
-         Diff it against the configurator's templates if unsure."
+# Report ALL of them, and say which one is live. `head -1` picked an arbitrary
+# file, which is wrong the moment a regeneration has left both a fresh
+# RatOS.cfg and the older, hand-edited RatOS_4.1.cfg side by side -- exactly
+# the state that loses hand edits, and the one this check exists to catch.
+PCFG="$PRINTER_DATA_DIR/config/printer.cfg"
+GENS=()
+while IFS= read -r g; do GENS+=("$g"); done < <(
+	find "$PRINTER_DATA_DIR/config" -maxdepth 1 -name 'RatOS*.cfg' 2>/dev/null | sort || true)
+
+if [ "${#GENS[@]}" -eq 0 ]; then
+	attn "no generated RatOS*.cfg at the top of config/"
 else
-	attn "no generated RatOS*.cfg found at the top of config/"
+	for g in "${GENS[@]}"; do
+		b="$(basename "$g")"
+		if grep -qs "^\[include $b\]" "$PCFG"; then
+			ok "$b -- included by printer.cfg, so this is the live one"
+		else
+			attn "$b -- present but NOT included by printer.cfg. Either a leftover
+         or a fresh regeneration that is not wired up. Do not assume the
+         file you edited is the file Klippy reads."
+		fi
+		# A generated file that includes something out of Custom_settings/ has
+		# been hand-edited: the configurator never emits those. On this printer
+		# that include is what makes it a 600, and regeneration deletes it.
+		HAND="$(grep -n '^\[include Custom_settings/' "$g" 2>/dev/null || true)"
+		if [ -n "$HAND" ]; then
+			attn "$b contains hand-added includes, which regeneration DELETES:"
+			printf '%s\n' "$HAND" | sed 's/^/           /'
+			printf '         Move them into printer.cfg before migrating.\n'
+		fi
+	done
+	attn "Every RatOS*.cfg above says it is generated and will be overwritten.
+         Any other hand edit -- bed size, run_current, parking positions --
+         belongs in printer.cfg too. Diff against the configurator templates
+         if unsure."
 fi
-echo
 
 # --- verdict ----------------------------------------------------------------
 
