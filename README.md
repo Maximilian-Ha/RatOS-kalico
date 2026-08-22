@@ -201,7 +201,7 @@ the earlier analysis got them wrong in both directions:
 fork.conf                     repo URLs and branches — the only place they live
 kalico/                       the firmware port + its provenance
 configurator/                 the RatOS delta, as anchored transforms
-scripts/                      build the forks; preflight a printer
+scripts/                      build the forks; preflight and verify a printer
 tests/                        offline proofs; run-all.sh does everything
 docs/                         architecture, risks, test plan, maintenance,
                               and the 600 printer type

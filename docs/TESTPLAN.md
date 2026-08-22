@@ -164,6 +164,19 @@ tar -C "$HOME" -cf "$HOME/klippy-env.pre-kalico.tar" klippy-env
 **Klippy must start and report ready.** If it does not, the log names the
 section. Nothing below matters until this is green.
 
+Then confirm it is really Kalico that started, not just that something did:
+
+```bash
+scripts/verify-kalico.sh
+```
+
+It separates three questions that can disagree — is the code in `~/klipper`
+Kalico, is the *running process* that code, and did it load cleanly. The second
+is the one that matters: `printer.py` writes `App Name: Kalico` into
+`klippy.log` at every start, and `klippy.log` is rotated on start, so what is in
+it now describes the process running now. Stock Klipper never writes that line
+at all.
+
 Expected new behaviour at this point: Klippy reports itself as **Kalico** in the
 web UI. Mainsail may show an "unofficial remote url" anomaly for klipper. Both
 are normal.
