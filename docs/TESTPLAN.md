@@ -59,10 +59,32 @@ Point `~/ratos-configurator` at the fork's deployment branch. The **local
 branch name must equal** the `primary_branch` in the fork's `moonraker.conf`,
 or Moonraker can never pull the configurator again:
 
+RatOS clones the configurator **single-branch**, so `remote.origin.fetch` names
+one branch only and `git fetch origin <other-branch>` writes nothing but
+`FETCH_HEAD` — no `origin/<other-branch>` ref is created, and the checkout then
+fails with *"is not a commit and a branch cannot be created from it"*. Widen the
+refspec first. Moonraker needs that tracking ref too, once `primary_branch`
+becomes the fork's branch, so this is a fix rather than a workaround:
+
 ```bash
 git -C ~/ratos-configurator remote set-url origin https://github.com/Maximilian-Ha/RatOS-configurator.git
-git -C ~/ratos-configurator fetch origin v2.1.x-kalico-deployment
+git -C ~/ratos-configurator config --get-all remote.origin.fetch   # note it down, for rollback
+git -C ~/ratos-configurator config --unset-all remote.origin.fetch
+git -C ~/ratos-configurator config --add remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+git -C ~/ratos-configurator fetch origin
 git -C ~/ratos-configurator checkout -B v2.1.x-kalico-deployment origin/v2.1.x-kalico-deployment
+```
+
+Check before restarting anything — if this still names `Rat-OS/klipper`, the
+checkout did not take and `ratos-update.sh` would just run upstream's migration
+again and report success:
+
+```bash
+git -C ~/ratos-configurator branch --show-current
+grep -n 'RATOS_FORK_URL=' ~/printer_data/config/RatOS/scripts/klipper-fork-migration.sh
+```
+
+```bash
 sudo systemctl restart ratos-configurator moonraker
 ```
 
@@ -313,11 +335,20 @@ can then never pull the configurator again:
 
 ```bash
 git -C ~/ratos-configurator remote set-url origin https://github.com/Rat-OS/RatOS-configurator.git
-git -C ~/ratos-configurator fetch origin v2.1.x-deployment-2
+git -C ~/ratos-configurator fetch origin
 git -C ~/ratos-configurator checkout -B v2.1.x-deployment-2 origin/v2.1.x-deployment-2
 sudo systemctl restart ratos-configurator moonraker
 sudo ~/printer_data/config/RatOS/scripts/ratos-update.sh
 ```
+
+A plain `git fetch origin` works here only because stage 1 widened
+`remote.origin.fetch`. If you are rolling back on a machine that never had that
+done, widen it the same way first, or the tracking ref will not exist.
+
+Never paste `exit` into an interactive SSH session, in either direction — it
+terminates the login shell, and the error you needed to read scrolls away with
+the window. Wrap the sequence in `bash -c '...' 2>&1 | tee ~/switch.log`
+instead.
 
 The last command runs the *upstream* migration script again, which pulls
 `~/klipper` back to `Rat-OS/klipper` at its pinned commit.
