@@ -402,3 +402,28 @@ dangling one, and fails specifically on a colliding-but-unexcluded one with the
 two commands that fix it. The fork cedes `gcode_shell_command.py` to Kalico
 deliberately — see `t_drop_gcode_shell_extension` — so the replacement
 itself is expected, and is reported as a note rather than a failure.
+
+### What happens on the updates after that — checked, and it holds
+
+Dropping the extension from `expected_extensions` does not unregister it. The
+verify loop in `ratos-common.sh` reaches `[[ ! -v expected_extensions[...] ]]`,
+prints `WARNING: Unexpected klipper extension found`, and `continue`s — the
+entry stays in the persisted registry, so `symlinkExtensions` keeps iterating it
+on every update. The obvious worry is that it re-links the symlink over Kalico's
+now-tracked file, which would make `git diff-index` see a modified path and
+abort every later migration with `KLIPPER_UNCOMMITTED_CHANGES`.
+
+It does not. `extensions.ts:44` computes `existsSync(destination)`, which is
+**true** for Kalico's regular file, and `:50` only creates the link when that is
+false. The sweep reports "already exists. Skipping." and leaves the tracked file
+alone. RatOS' own verifier is satisfied too, because it inspects the source path
+in `printer_data`, which the fork still ships.
+
+One side effect is worth knowing, because it explains why the missing-exclude
+failure above is rare rather than routine: `:58` appends the exclude line
+whenever it is missing, whether or not it created a link. So any machine that
+has completed a configurator update tends to have the line already. It does not
+help on the run that matters, though — `ratos-update.sh` invokes
+`klipper-fork-migration.sh` before the configurator's symlink sweep, so a
+machine that lost its exclude file aborts in the migration before anything can
+repair it. Hence the guard in the migration script rather than reliance on this.
