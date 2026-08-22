@@ -44,6 +44,11 @@ import sys
 
 MARKER = "RatOS-Kalico"
 
+# Paths Kalico tracks in klippy/extras that RatOS or a third-party addon
+# also symlinks in. Derived, not guessed -- tests/check_collisions.py
+# recomputes this from the built forks and fails if it drifts.
+KALICO_OWNED_PATHS = ["gcode_shell_command.py", "belay.py"]
+
 # Upstream commit these transforms were written and verified against.
 VERIFIED_UPSTREAM = "26d261742157103e166e6879cd9dead37cf2cc42"
 
@@ -247,13 +252,14 @@ def t_migration_url_normalization(text, cfg):
     return text
 
 
-def t_migration_yield_shell_command(text, cfg):
-    """Remove RatOS' gcode_shell_command.py symlink before checking out Kalico.
+def t_migration_yield_kalico_owned(text, cfg):
+    """Remove symlinks over paths Kalico tracks, before checking Kalico out.
 
-    Kalico tracks ``klippy/extras/gcode_shell_command.py``. RatOS symlinks its
-    own copy over exactly that path. What happens next depends entirely on
-    whether that path is listed in ``.git/info/exclude``, and the two outcomes
-    could not be further apart -- verified by reproduction on git 2.43:
+    Kalico tracks ``klippy/extras/gcode_shell_command.py`` and
+    ``klippy/extras/belay.py``. RatOS symlinks its own copy over the first; a
+    standalone Belay install symlinks over the second. What happens next depends
+    entirely on whether the path is listed in ``.git/info/exclude``, and the two
+    outcomes could not be further apart -- verified by reproduction on git 2.43:
 
     * listed   -> git treats the symlink as expendable and ``checkout -b``
                   silently replaces it with Kalico's file. This is the outcome
@@ -267,33 +273,40 @@ def t_migration_yield_shell_command(text, cfg):
                   Kalico and no amount of retrying helps.
 
     Whether the line is present is a property of the printer's history, not of
-    anything this fork controls: RatOS writes it when it registers the
-    extension, and Moonraker's Hard Recover deletes the whole ``.git``
-    directory along with it. So the safe state is not something to hope for.
+    anything this fork controls: RatOS writes it when it registers an extension,
+    and Moonraker's Hard Recover deletes the whole ``.git`` directory along with
+    it. So the safe state is not something to hope for.
 
-    Deleting the link first makes both paths converge on the good one. Guarded
+    Deleting the links first makes both paths converge on the good one. Guarded
     on -L so it can only ever remove a symlink, never a real file, and it never
-    touches the source in printer_data. After the first migration the path is a
-    regular tracked file and the guard makes this a no-op -- which matters,
+    touches the source in printer_data. After the first migration these paths
+    are regular tracked files and the guard makes this a no-op -- which matters,
     because this script runs on every update, not just once.
+
+    The list is not free-form: ``tests/check_collisions.py`` re-derives it from
+    the built forks and fails if it drifts.
     """
+    owned = " ".join(KALICO_OWNED_PATHS)
     return sub_once(
         text,
         "    # Check if target branch already exists locally\n",
-        "    # %s: Kalico tracks klippy/extras/gcode_shell_command.py, which RatOS\n"
-        "    # symlinks. If that symlink is not in .git/info/exclude, the checkout\n"
-        "    # below refuses to overwrite it and this script returns 6 -- on every\n"
-        "    # update, forever. The fork cedes this file to Kalico anyway (see\n"
-        "    # ratos-common.sh), so drop the link and let the checkout supply the\n"
-        "    # real file. -L means this can never delete anything but a symlink,\n"
-        "    # and never the source in printer_data.\n"
-        "    if [ -L \"$KLIPPER_DIR/klippy/extras/gcode_shell_command.py\" ]; then\n"
-        "        log_info \"Removing RatOS' gcode_shell_command.py symlink; Kalico ships its own.\" \"checkout_branch\"\n"
-        "        rm -f \"$KLIPPER_DIR/klippy/extras/gcode_shell_command.py\"\n"
-        "    fi\n"
+        "    # %s: Kalico tracks these paths in klippy/extras, and RatOS or a\n"
+        "    # third-party addon may have symlinked its own copy over them. A\n"
+        "    # symlink that is not in .git/info/exclude makes the checkout below\n"
+        "    # refuse to overwrite it, and this script then returns 6 -- on every\n"
+        "    # update, forever. The fork cedes these files to Kalico anyway, so\n"
+        "    # drop the links and let the checkout supply the real ones. -L means\n"
+        "    # only a symlink can ever be removed, never a real file, and never\n"
+        "    # the source in printer_data.\n"
+        "    for _ratos_kalico_owned in %s; do\n"
+        "        if [ -L \"$KLIPPER_DIR/klippy/extras/$_ratos_kalico_owned\" ]; then\n"
+        "            log_info \"Removing $_ratos_kalico_owned symlink; Kalico ships its own.\" \"checkout_branch\"\n"
+        "            rm -f \"$KLIPPER_DIR/klippy/extras/$_ratos_kalico_owned\"\n"
+        "        fi\n"
+        "    done\n"
         "\n"
-        "    # Check if target branch already exists locally\n" % MARKER,
-        "migration: yield gcode_shell_command.py to Kalico",
+        "    # Check if target branch already exists locally\n" % (MARKER, owned),
+        "migration: yield Kalico-owned paths",
     )
 
 
@@ -652,7 +665,7 @@ FILE_TRANSFORMS = [
             t_migration_url_normalization,
             t_migration_constants,
             t_migration_allowlist,
-            t_migration_yield_shell_command,
+            t_migration_yield_kalico_owned,
         ],
     ),
     (

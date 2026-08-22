@@ -30,6 +30,7 @@ import sys
 # name that nobody installs is harmless; the intersection just stays empty.
 THIRD_PARTY = [
     "beacon.py",  # beacon3d/beacon_klipper
+    "belay.py",  # Annex-Engineering/Belay -- Kalico integrated it natively
     "autotune_tmc.py",  # andrewmcgr/klipper_tmc_autotune
     "motor_constants.py",  # ditto
     "motor_database.cfg",  # ditto

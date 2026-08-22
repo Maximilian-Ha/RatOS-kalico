@@ -143,8 +143,9 @@ The hard blockers, each verified against the real sources:
   `.git/info/exclude`, `git checkout` refuses to overwrite it and the migration
   exits 6 — on every update, permanently. Reproduced on git 2.43. The migration
   now drops the link first, guarded so it can only ever remove a symlink.
-  It is the only one of the 185 paths Kalico tracks under `klippy/extras` and
-  `klippy/kinematics` that collides with anything RatOS or an addon links in;
+  Two of the 185 paths Kalico tracks under `klippy/extras` and
+  `klippy/kinematics` collide with something RatOS or an addon links in — the
+  other is `belay.py`, because Kalico integrated Belay natively.
   `tests/check_collisions.py` re-derives that set so preflight's hardcoded copy
   cannot go stale. `docs/RISKS.md` §12.
 - **`sweeping_period`.** Kalico defaults it to `0.0` where Klipper uses `1.2`,

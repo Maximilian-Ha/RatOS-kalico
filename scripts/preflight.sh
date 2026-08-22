@@ -83,11 +83,11 @@ echo
 # --- symlinks in klippy/extras ----------------------------------------------
 # The migration is checkout + reset --hard, with no `git clean` anywhere, so an
 # untracked symlink survives it -- UNLESS the target tree TRACKS the same path.
-# Kalico tracks 185 files under klippy/extras and klippy/kinematics, and exactly
-# one of them collides with what RatOS and the third-party addons link in.
+# Kalico tracks 185 files under klippy/extras and klippy/kinematics; two of
+# them collide with what RatOS and the third-party addons link in.
 # tests/check_collisions.py re-derives this list from the built forks, so it
 # fails loudly rather than going stale if Kalico ever starts tracking another.
-KALICO_TRACKED_COLLISIONS="gcode_shell_command.py"
+KALICO_TRACKED_COLLISIONS="gcode_shell_command.py belay.py"
 
 say "klippy/extras symlinks"
 LINKS=0

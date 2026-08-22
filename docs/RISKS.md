@@ -356,20 +356,29 @@ when a **tracked** path in the target tree collides with it.
 
 So the question reduces to: which basenames does Kalico track that RatOS or an
 addon also links in? Of the 185 files Kalico tracks under `klippy/extras` and
-`klippy/kinematics`, exactly **one** — `gcode_shell_command.py`.
-`tests/check_collisions.py` re-derives that set from the built forks and fails
+`klippy/kinematics`, **two**:
+
+| Path | Who else supplies it |
+|---|---|
+| `gcode_shell_command.py` | RatOS, as a registered extension |
+| `belay.py` | a standalone Belay install — Kalico integrated the module natively |
+
+`belay.py` is the reason this list is derived rather than written down once.
+Nothing about the fork suggested it; it surfaced only when a real printer's
+`printer.cfg` turned out to declare `[belay my_belay]`.
+`tests/check_collisions.py` re-derives the set from the built forks and fails
 if it ever changes, because `scripts/preflight*.sh` has to hardcode it.
 
-`autotune_tmc.py`, `motor_constants.py`, `motor_database.cfg` and `beacon.py`
-do not collide, and therefore survive both the checkout and the `reset --hard`.
-Their targets are outside `~/klipper`, so repointing the repository cannot
-dangle them either.
+`autotune_tmc.py`, `motor_constants.py`, `motor_database.cfg`, `led_effect.py`
+and `beacon.py` do not collide, and therefore survive both the checkout and the
+`reset --hard`. Their targets are outside `~/klipper`, so repointing the
+repository cannot dangle them either.
 
 ### The inversion: being *excluded* is the dangerous state
 
-For the one path that does collide, everything depends on whether
-`klippy/extras/gcode_shell_command.py` appears in `~/klipper/.git/info/exclude`
-— which RatOS writes when it registers the extension. Reproduced on git 2.43:
+For a path that does collide, everything depends on whether it appears in
+`~/klipper/.git/info/exclude` — which RatOS writes when it registers an
+extension. Reproduced on git 2.43:
 
 | in `.git/info/exclude` | `git checkout -b` does |
 |---|---|
@@ -390,10 +399,10 @@ migration. Neither state is visible without looking.
 
 Two things, because the preflight alone cannot fix a machine.
 
-`configurator/patch_configurator.py` adds `t_migration_yield_shell_command`,
-which removes the symlink — guarded on `-L`, so it can only ever remove a link
-and never a real file or the source under `printer_data` — immediately before
-the checkout. Both states then converge on the good one. After the first
+`configurator/patch_configurator.py` adds `t_migration_yield_kalico_owned`,
+which removes those symlinks — guarded on `-L`, so it can only ever remove a
+link and never a real file or the source under `printer_data` — immediately
+before the checkout. Both states then converge on the good one. After the first
 migration the path is a regular tracked file and the guard makes it a no-op,
 which matters because this script runs on every update.
 

@@ -120,7 +120,7 @@ printf '\n--- committed tree ---\n'
 for repo_path in "$KALICO:scripts/klippy-requirements.txt:numpy>=1.26.4,<2" \
 	"$CONF:configuration/klippy/requirements.txt:numpy>=1.26.4,<2" \
 	"$CONF:configuration/moonraker.conf:pinned_commit: $KALICO_COMMIT" \
-	"$CONF:configuration/scripts/klipper-fork-migration.sh:if [ -L \"\$KLIPPER_DIR/klippy/extras/gcode_shell_command.py\" ]; then"; do
+	"$CONF:configuration/scripts/klipper-fork-migration.sh:for _ratos_kalico_owned in gcode_shell_command.py belay.py; do"; do
 	repo="${repo_path%%:*}"; rest="${repo_path#*:}"
 	file="${rest%%:*}"; needle="${rest#*:}"
 	if git -C "$repo" show "HEAD:$file" 2>/dev/null | grep -qF "$needle"; then
