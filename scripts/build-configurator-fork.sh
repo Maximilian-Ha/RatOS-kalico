@@ -95,6 +95,11 @@ git -C "$CHECKOUT" checkout --quiet -B "$FORK_CONFIGURATOR_BRANCH" "$BASE"
 # that ships to printers. Scoped to the two directories the fork writes, so a
 # pnpm node_modules under src/ is never touched.
 git -C "$CHECKOUT" clean --quiet -ffdx -- configuration .github
+# src/ cannot be cleaned wholesale -- a local pnpm run leaves node_modules
+# there -- but running python over a patched script under src/scripts
+# leaves __pycache__ behind, which `add -u` does not stage and the commit
+# guard then rejects. Clean exactly that, by pathspec.
+git -C "$CHECKOUT" clean --quiet -ffdx -- 'src/**/__pycache__'
 
 say "Applying the Kalico delta"
 python3 "$REPO_ROOT/configurator/patch_configurator.py" \
