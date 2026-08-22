@@ -310,6 +310,46 @@ def t_migration_yield_kalico_owned(text, cfg):
     )
 
 
+def t_tmc2240_rref(text, cfg):
+    """Emit ``rref`` for TMC2240 drivers -- Kalico refuses to start without it.
+
+    Klipper defaults it: ``config.getfloat('rref', 12000., minval=12000.,
+    maxval=60000.)`` at klippy/extras/tmc2240.py in the commit RatOS pins.
+    Kalico dropped the default (``tmc2240.py:285``), so the option is mandatory
+    and a generated RatOS config dies at startup with
+
+        Option 'rref' in section 'tmc2240 extruder' must be specified
+
+    on every machine with a TMC2240 toolboard -- BTT SB2240 and LDO 2240 among
+    them. The generator never wrote the option because it only knows
+    ``senseResistor``, which TMC2240 drivers do not have; they use a reference
+    resistor instead.
+
+    12000 is not a guess and not a datasheet lookup: it is the value every RatOS
+    machine has silently been running with, because that was Klipper's default.
+    Emitting it explicitly reproduces the existing motor current exactly. If a
+    board's real reference resistor differed, the printer would already have
+    been running at the wrong current under Klipper, and a firmware migration is
+    the wrong moment to change that.
+
+    Placed just before the return so it covers both branches -- the motor-preset
+    path and the plain run_current path -- and guarded against a preset that
+    already supplies rref, so it can never emit the option twice.
+    """
+    return sub_once(
+        text,
+        "\t\t\treturn section.join('\\n') + '\\n';\n\t\t},\n\t\trenderSpeedLimits() {",
+        "\t\t\t// %s: Kalico makes rref mandatory for TMC2240 where Klipper\n"
+        "\t\t\t// defaulted it to 12000. Without this the generated config does\n"
+        "\t\t\t// not load at all. 12000 is what Klipper's default meant, so this\n"
+        "\t\t\t// reproduces the current the machine already runs.\n"
+        "\t\t\tif (rail.driver.type === 'TMC2240' && !section.some((l) => l.startsWith('rref:'))) {\n"
+        "\t\t\t\tsection.push(`rref: 12000`);\n"
+        "\t\t\t}\n"
+        "\t\t\treturn section.join('\\n') + '\\n';\n\t\t},\n\t\trenderSpeedLimits() {" % MARKER,
+        "klipper-config.ts: rref for TMC2240",
+    )
+
 def t_moonraker_klipper_pin(text, cfg):
     """Repoint the pinned klipper commit at the Kalico fork.
 
@@ -680,6 +720,7 @@ FILE_TRANSFORMS = [
     ("configuration/klippy/resonance_generator.py", [t_resonance_generator]),
     ("configuration/scripts/ratos-common.sh", [t_drop_gcode_shell_extension]),
     ("configuration/klippy/requirements.txt", [t_klippy_requirements]),
+    ("src/server/helpers/klipper-config.ts", [t_tmc2240_rref]),
 ]
 
 

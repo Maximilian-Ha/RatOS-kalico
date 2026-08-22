@@ -164,6 +164,12 @@ say "Committing"
 # tree looked correct. Safe to use -A here only because these two directories
 # were cleaned above -- without that, -A publishes strays.
 git -C "$CHECKOUT" add -A -- configuration .github
+# src/ is NOT cleaned above and must not be `add -A`ed: a local pnpm run
+# leaves node_modules there. `add -u` stages modifications to tracked
+# files only, so a transform under src/ ships while an untracked tree
+# cannot. Anything this still misses trips the porcelain guard below
+# rather than being published silently.
+git -C "$CHECKOUT" add -u -- src
 
 git -C "$CHECKOUT" -c user.name="RatOS-Kalico build" \
 	-c user.email="noreply@localhost" \
