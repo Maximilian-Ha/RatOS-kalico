@@ -128,8 +128,21 @@ if [ -f "$HOME/beacon/beacon.py" ]; then
 		grep -q "def run_probe(self, gcmd, \*args" "$HOME/beacon/beacon.py"; then
 		ok "beacon speaks the legacy probe protocol Kalico drives"
 	else
-		fail "beacon does NOT expose multi_probe_begin / run_probe(gcmd, *args).
-         Kalico's probe.py predates Klipper's probe-session API. Do not proceed."
+		fail "beacon does not expose the legacy probe protocol Kalico drives
+         (multi_probe_begin / run_probe(gcmd, *args)). Kalico's probe.py
+         predates Klipper's probe-session API, so this beacon cannot probe
+         on Kalico -- and every mesh, Z-tilt and contact routine goes
+         through it.
+         This is almost certainly an OUT OF DATE beacon rather than a dead
+         end: current beacon_klipper master carries a BeaconProbeWrapper
+         that implements BOTH protocols, and its history explicitly
+         mentions Kalico support. Update it before migrating:
+             cd ~/beacon && git log --oneline -1     # what you have now
+             git -C ~/beacon pull
+             sudo systemctl restart klipper
+         then re-run this preflight. Beacon is managed by moonraker
+         ([update_manager beacon], channel dev), so the update button in
+         Mainsail does the same thing."
 	fi
 else
 	attn "no ~/beacon/beacon.py -- skipping the probe API check"
