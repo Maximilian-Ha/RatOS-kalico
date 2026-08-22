@@ -173,10 +173,42 @@ echo
 
 # --- third-party modules ----------------------------------------------------
 
+# Third-party klippy modules are installed by symlinking one file out of their
+# own checkout into klippy/extras, so the extras entry -- not a guessed
+# ~/<name>/ path -- is what actually resolves. Guessing silently skipped the
+# only Kalico-compat check klipper_tmc_autotune has on a machine whose
+# printer.cfg declares [autotune_tmc] seven times. Resolve, then fall back.
+resolve_extra() {
+	local name="$1"
+	shift
+	local link="$KLIPPER_DIR/klippy/extras/$name.py" p
+	if [ -e "$link" ]; then readlink -f "$link"; return 0; fi
+	for p in "$@"; do
+		if [ -e "$p" ]; then readlink -f "$p"; return 0; fi
+	done
+	# find does not follow symlinks, so this cannot wander into klippy/extras
+	# or the RatOS symlink and re-find the link we already missed.
+	p="$(find "$HOME" -maxdepth 3 -name "$name.py" -not -path '*/klippy-env/*' 2>/dev/null | head -1 || true)"
+	if [ -n "$p" ]; then readlink -f "$p"; return 0; fi
+	return 1
+}
+
+# Does this printer's own config declare the section? "not installed" and
+# "installed somewhere I did not look" need different answers, and only the
+# config can tell them apart. find does not follow the config/RatOS symlink,
+# so the configurator's own templates cannot produce a false positive.
+declares() {
+	local hits
+	hits="$(find "$PRINTER_DATA_DIR/config" -maxdepth 2 -name '*.cfg' -print0 2>/dev/null |
+		xargs -0 -r grep -ls -- "$1" 2>/dev/null || true)"
+	[ -n "$hits" ]
+}
+
 say "Third-party klippy modules"
-if [ -f "$HOME/beacon/beacon.py" ]; then
-	if grep -q "def multi_probe_begin" "$HOME/beacon/beacon.py" &&
-		grep -q "def run_probe(self, gcmd, \*args" "$HOME/beacon/beacon.py"; then
+BEACON="$(resolve_extra beacon "$HOME/beacon/beacon.py" || true)"
+if [ -n "$BEACON" ]; then
+	if grep -q "def multi_probe_begin" "$BEACON" &&
+		grep -q "def run_probe(self, gcmd, \*args" "$BEACON"; then
 		ok "beacon implements the legacy probe API Kalico uses, with a
          variadic run_probe that absorbs Kalico's extra retry_session argument"
 	else
@@ -196,20 +228,40 @@ if [ -f "$HOME/beacon/beacon.py" ]; then
          ([update_manager beacon], channel dev), so the update button in
          Mainsail does the same thing."
 	fi
+elif declares '\[beacon\]'; then
+	fail "printer.cfg declares [beacon], but beacon.py was not found -- so the
+         probe-protocol check did NOT run. Kalico's probe.py predates
+         Klipper's probe-session API and drives the legacy protocol, and
+         every mesh, Z-tilt and contact routine goes through it. Locate it
+         and check by hand before migrating:
+             ls -l ~/klipper/klippy/extras/beacon.py
+             grep -n 'def multi_probe_begin\\|def run_probe' \"$(readlink -f ~/klipper/klippy/extras/beacon.py)\""
 else
-	attn "no ~/beacon/beacon.py found -- skipping the probe API check"
+	attn "beacon is neither installed nor declared -- skipping the probe API check"
 fi
 
-AT="$HOME/klipper_tmc_autotune/autotune_tmc.py"
-if [ -f "$AT" ]; then
+AT="$(resolve_extra autotune_tmc "$HOME/klipper_tmc_autotune/autotune_tmc.py" || true)"
+if [ -n "$AT" ]; then
 	if grep -q "from klippy.extras import tmc" "$AT"; then
-		ok "klipper_tmc_autotune has explicit Kalico support"
+		ok "klipper_tmc_autotune has explicit Kalico support ($AT)"
 	else
-		fail "klipper_tmc_autotune has no Kalico import path. Kalico renamed the
-         TMC current helpers; update it before migrating."
+		fail "klipper_tmc_autotune at $AT has no Kalico import path. Kalico
+         moved the TMC helpers into a klippy package; update it before
+         migrating."
 	fi
+elif declares '\[autotune_tmc'; then
+	fail "printer.cfg declares [autotune_tmc], but this script cannot find
+         autotune_tmc.py anywhere -- so the one Kalico-compatibility check
+         that module has did NOT run. It is installed (klippy would not
+         start otherwise), just not where this looked. Kalico imports every
+         module in klippy/extras eagerly and swallows import errors
+         silently, so a module that is wrong for Kalico will not announce
+         itself; it will simply stop tuning. Locate and check it by hand:
+             ls -l ~/klipper/klippy/extras/autotune_tmc.py
+             grep -n 'import tmc' \"\$(readlink -f ~/klipper/klippy/extras/autotune_tmc.py)\"
+         The line you want is: from klippy.extras import tmc"
 else
-	attn "klipper_tmc_autotune not found at $AT -- skipping"
+	attn "klipper_tmc_autotune is neither installed nor declared -- skipping"
 fi
 echo
 

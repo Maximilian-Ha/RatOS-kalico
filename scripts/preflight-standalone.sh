@@ -122,10 +122,42 @@ else
 fi
 
 # --- third-party modules ----------------------------------------------------
+# Third-party klippy modules are installed by symlinking one file out of their
+# own checkout into klippy/extras, so the extras entry -- not a guessed
+# ~/<name>/ path -- is what actually resolves. Guessing silently skipped the
+# only Kalico-compat check klipper_tmc_autotune has on a machine whose
+# printer.cfg declares [autotune_tmc] seven times. Resolve, then fall back.
+resolve_extra() {
+	local name="$1"
+	shift
+	local link="$KLIPPER_DIR/klippy/extras/$name.py" p
+	if [ -e "$link" ]; then readlink -f "$link"; return 0; fi
+	for p in "$@"; do
+		if [ -e "$p" ]; then readlink -f "$p"; return 0; fi
+	done
+	# find does not follow symlinks, so this cannot wander into klippy/extras
+	# or the RatOS symlink and re-find the link we already missed.
+	p="$(find "$HOME" -maxdepth 3 -name "$name.py" -not -path '*/klippy-env/*' 2>/dev/null | head -1 || true)"
+	if [ -n "$p" ]; then readlink -f "$p"; return 0; fi
+	return 1
+}
+
+# Does this printer's own config declare the section? "not installed" and
+# "installed somewhere I did not look" need different answers, and only the
+# config can tell them apart. find does not follow the config/RatOS symlink,
+# so the configurator's own templates cannot produce a false positive.
+declares() {
+	local hits
+	hits="$(find "$PRINTER_DATA_DIR/config" -maxdepth 2 -name '*.cfg' -print0 2>/dev/null |
+		xargs -0 -r grep -ls -- "$1" 2>/dev/null || true)"
+	[ -n "$hits" ]
+}
+
 say "Third-party klippy modules"
-if [ -f "$HOME/beacon/beacon.py" ]; then
-	if grep -q "def multi_probe_begin" "$HOME/beacon/beacon.py" &&
-		grep -q "def run_probe(self, gcmd, \*args" "$HOME/beacon/beacon.py"; then
+BEACON="$(resolve_extra beacon "$HOME/beacon/beacon.py" || true)"
+if [ -n "$BEACON" ]; then
+	if grep -q "def multi_probe_begin" "$BEACON" &&
+		grep -q "def run_probe(self, gcmd, \*args" "$BEACON"; then
 		ok "beacon speaks the legacy probe protocol Kalico drives"
 	else
 		fail "beacon does not expose the legacy probe protocol Kalico drives
@@ -144,15 +176,31 @@ if [ -f "$HOME/beacon/beacon.py" ]; then
          ([update_manager beacon], channel dev), so the update button in
          Mainsail does the same thing."
 	fi
+elif declares '\[beacon\]'; then
+	fail "printer.cfg declares [beacon] but beacon.py was not found, so the
+         probe-protocol check did NOT run. Kalico drives the legacy probe
+         protocol and every mesh, Z-tilt and contact routine goes through
+         it. Check it by hand before migrating:
+             ls -l ~/klipper/klippy/extras/beacon.py
+             grep -n 'def multi_probe_begin\\|def run_probe' \"$(readlink -f ~/klipper/klippy/extras/beacon.py)\""
 else
-	attn "no ~/beacon/beacon.py -- skipping the probe API check"
+	attn "beacon is neither installed nor declared -- skipping the probe API check"
 fi
-if [ -f "$HOME/klipper_tmc_autotune/autotune_tmc.py" ]; then
-	grep -q "from klippy.extras import tmc" "$HOME/klipper_tmc_autotune/autotune_tmc.py" &&
-		ok "klipper_tmc_autotune has Kalico support" ||
-		fail "klipper_tmc_autotune has no Kalico import path -- update it first"
+AT="$(resolve_extra autotune_tmc "$HOME/klipper_tmc_autotune/autotune_tmc.py" || true)"
+if [ -n "$AT" ]; then
+	grep -q "from klippy.extras import tmc" "$AT" &&
+		ok "klipper_tmc_autotune has Kalico support ($AT)" ||
+		fail "klipper_tmc_autotune at $AT has no Kalico import path -- update it first"
+elif declares '\[autotune_tmc'; then
+	fail "printer.cfg declares [autotune_tmc] but autotune_tmc.py was not found,
+         so its Kalico check did NOT run. It is installed -- klippy would not
+         start otherwise -- just not where this looked. Kalico swallows
+         extras import errors silently, so check it by hand:
+             ls -l ~/klipper/klippy/extras/autotune_tmc.py
+             grep -n 'import tmc' \"\$(readlink -f ~/klipper/klippy/extras/autotune_tmc.py)\"
+         The line you want is: from klippy.extras import tmc"
 else
-	attn "klipper_tmc_autotune not found -- skipping"
+	attn "klipper_tmc_autotune is neither installed nor declared -- skipping"
 fi
 
 # --- config that regeneration would destroy ---------------------------------
