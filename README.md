@@ -3,23 +3,29 @@
 RatOS 2.1, forked to run on [Kalico](https://github.com/KalicoCrew/kalico)
 instead of Rat-OS/klipper.
 
-> ### Status: builds green, preflight green on one real printer, **not yet run**
+## 👉 Start here
+
+| | |
+|---|---|
+| **Switch a printer to Kalico** | [docs/UPGRADE.md](docs/UPGRADE.md) · [deutsch](docs/UPGRADE.de.md) |
+| **Switch it back** | [docs/ROLLBACK.md](docs/ROLLBACK.md) · [deutsch](docs/ROLLBACK.de.md) |
+
+> ## ⚠️ Early version. One printer. Hand on the emergency stop.
 >
-> The forks are built and published, and the deployment branch CI is green.
-> Every patch applies to today's upstream and passes the behavioural tests in
-> `tests/` — those cover the kinematics contract and prove the firmware port
-> does not change the computed mesh, but they do **not** cover every patched
-> hunk.
+> This has been run end to end on exactly **one** machine — a V-Core 4.1 IDEX 600
+> with a Beacon probe, on Raspberry Pi OS bullseye. It homes, probes and runs
+> there. Your board, your probe and your plugins are a combination nobody has
+> tried.
 >
-> `scripts/preflight.sh` has now been run on a real V-Core 4.1 IDEX 600 and
-> passes. That machine turned out to be Raspberry Pi OS **bullseye, aarch64,
-> Python 3.9.2**, with **numpy 1.26.4 / scipy 1.11.4 / jinja2 2.11.3 /
-> pygam 0.9.1** — exactly the combination the fork pins to, so no venv work is
-> needed there. Its beacon was too old and had to be updated first; preflight
-> caught that. See [What is not done](#what-is-not-done).
+> **Stay within arm's reach of the emergency stop for the whole first session.**
+> The first `G28 Z` after the switch is the dangerous moment: Kalico moves the Z
+> axis differently from Klipper while homing, and a wrong probe setting can drive
+> the nozzle into the bed. Do not start a print, and do not leave the printer
+> alone, until you have homed all three axes and watched a probe cycle finish.
 >
-> No firmware has been switched yet. Do not put this on a printer you need
-> this week.
+> Do not do this to a printer you need working tomorrow. Going back is
+> [documented and supported](docs/ROLLBACK.md) — read that before you start, so
+> you know what the exit looks like.
 
 **Published state**
 
@@ -63,7 +69,7 @@ Three parts, of which this repository is the definition of all three:
 |---|---|---|
 | **Kalico fork** | `~/klipper` on the printer | one derived commit, +131/−42 in two files |
 | **Configurator fork** | `~/ratos-configurator`, and via symlink `~/printer_data/config/RatOS` | 17 files |
-| **Third-party** | beacon, `klipper_tmc_autotune` | nothing, *provided both are current* — see below |
+| **Third-party** | beacon | nothing, *provided it is current* — see below |
 
 This repo holds no vendored copies. `scripts/build-*.sh` fetch pristine
 upstream and derive the fork branches, so following a new RatOS or Kalico
@@ -172,9 +178,17 @@ the earlier analysis got them wrong in both directions:
   real printer this was run against had exactly that, so preflight checks the
   installed file rather than trusting upstream — `git -C ~/beacon pull` fixed
   it.
-- **`klipper_tmc_autotune` works.** It already carries
+- **`klipper_tmc_autotune` works**, if you have it. It is **not** part of RatOS
+  — it is an optional add-on most printers do not have, and it appears here only
+  because the test machine had installed it. It already carries
   `from klippy.extras import tmc  # Kalico`, and reads `get_current()` by index
-  rather than unpacking, so Kalico's 5-tuple is harmless.
+  rather than unpacking, so Kalico's 5-tuple is harmless. The one caveat: RatOS
+  does not manage it, so nothing re-creates its links if `~/klipper` is ever
+  deleted and re-cloned.
+- **Belay stops needing a plugin.** Again **not** part of RatOS, and again only
+  relevant because the test machine used it for its filament buffers. Kalico
+  ships `belay.py` itself, with the same options, so the separate plugin can be
+  uninstalled after the switch and the configuration keeps working unchanged.
 
 ## What is not done
 
@@ -204,8 +218,10 @@ kalico/                       the firmware port + its provenance
 configurator/                 the RatOS delta, as anchored transforms
 scripts/                      build the forks; preflight and verify a printer
 tests/                        offline proofs; run-all.sh does everything
-docs/                         architecture, risks, test plan, maintenance,
-                              and the 600 printer type
+docs/         UPGRADE.md / ROLLBACK.md  the two operator guides (+ .de.md)
+              RISKS.md                  every known failure mode, with causes
+              TESTPLAN.md               the ordered bring-up checks
+              ARCHITECTURE.md, MAINTENANCE.md, PRINTER-600.md
 ```
 
 ## Licence

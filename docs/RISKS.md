@@ -438,7 +438,9 @@ Nothing about the fork suggested it; it surfaced only when a real printer's
 if it ever changes, because `scripts/preflight*.sh` has to hardcode it.
 
 `autotune_tmc.py`, `motor_constants.py`, `motor_database.cfg`, `led_effect.py`
-and `beacon.py` do not collide, and therefore survive both the checkout and the
+and `beacon.py` do not collide — note that only `beacon.py` is part of a normal
+RatOS install; the rest are optional add-ons, and are named here because the
+test machine happened to have them, and therefore survive both the checkout and the
 `reset --hard`. Their targets are outside `~/klipper`, so repointing the
 repository cannot dangle them either.
 
