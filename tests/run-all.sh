@@ -122,7 +122,8 @@ for repo_path in "$KALICO:scripts/klippy-requirements.txt:numpy>=1.26.4,<2" \
 	"$CONF:configuration/moonraker.conf:pinned_commit: $KALICO_COMMIT" \
 	"$CONF:configuration/scripts/klipper-fork-migration.sh:for _ratos_kalico_owned in gcode_shell_command.py belay.py; do" \
 	"$CONF:src/server/helpers/klipper-config.ts:section.push(\`rref: 12000\`)" \
-	"$CONF:configuration/z-probe/beacon.cfg:homing_retract_dist: 1"; do
+	"$CONF:configuration/z-probe/beacon.cfg:homing_retract_dist: 1" \
+	"$CONF:src/scripts/check-version.py:from klippy import reactor, serialhdl, clocksync, mcu"; do
 	repo="${repo_path%%:*}"; rest="${repo_path#*:}"
 	file="${rest%%:*}"; needle="${rest#*:}"
 	# NOT `grep -qF`: -q exits at the first match, git show gets SIGPIPE, and

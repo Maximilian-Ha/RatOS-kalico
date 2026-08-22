@@ -411,6 +411,67 @@ def t_beacon_homing_retract(text, cfg):
         "beacon.cfg: bound the Z homing retract",
     )
 
+def t_check_version_package_import(text, cfg):
+    """Import klippy's modules through the package, because Kalico has one.
+
+    Kalico turned ``klippy`` into a real Python package: it has an
+    ``__init__.py`` and its modules import each other relatively --
+    ``reactor.py`` opens with ``from . import chelper, util``. RatOS' board
+    version checker predates that. It appends ``<klipper>/klippy`` to
+    ``sys.path`` and imports ``reactor``, ``serialhdl``, ``clocksync`` and
+    ``mcu`` as top-level modules, which under Kalico raises
+
+        ImportError: attempted relative import with no known parent package
+
+    The configurator surfaces that as a failed ``mcu.boardVersion`` tRPC call,
+    so the board list in the UI cannot report firmware versions -- on a machine
+    where Kalico is asking to be re-flashed on every single boot.
+
+    Putting the klipper root on sys.path instead makes ``klippy`` importable as
+    the package it now is. The flat layout is kept as a fallback so the script
+    still runs against stock Klipper, which matters because this same
+    configurator has to work on a machine mid-migration.
+
+    Only this one script has the pattern; every other script under src/scripts
+    was checked.
+    """
+    return sub_once(
+        text,
+        'KLIPPER_DIR = os.path.abspath(os.environ[\'KLIPPER_DIR\'])\n'
+        'sys.path.append(os.path.join(KLIPPER_DIR, "klippy"))\n'
+        "import argparse\n"
+        "import logging\n"
+        "import time\n"
+        "import traceback\n"
+        "import reactor\n"
+        "import serialhdl\n"
+        "import clocksync\n"
+        "import mcu\n",
+        'KLIPPER_DIR = os.path.abspath(os.environ[\'KLIPPER_DIR\'])\n'
+        "import argparse\n"
+        "import logging\n"
+        "import time\n"
+        "import traceback\n"
+        "\n"
+        "# %s: Kalico made klippy a package, and its modules import each other\n"
+        "# relatively -- reactor.py opens with `from . import chelper, util`.\n"
+        "# Appending klippy/ to sys.path and importing them flat therefore raises\n"
+        '# "attempted relative import with no known parent package", which the\n'
+        "# configurator surfaces as a failed mcu.boardVersion call. Put the\n"
+        "# klipper root on the path so `klippy` resolves as the package it is,\n"
+        "# and keep the flat layout as a fallback for stock Klipper.\n"
+        'if os.path.isfile(os.path.join(KLIPPER_DIR, "klippy", "__init__.py")):\n'
+        "    sys.path.insert(0, KLIPPER_DIR)\n"
+        "    from klippy import reactor, serialhdl, clocksync, mcu\n"
+        "else:\n"
+        '    sys.path.append(os.path.join(KLIPPER_DIR, "klippy"))\n'
+        "    import reactor\n"
+        "    import serialhdl\n"
+        "    import clocksync\n"
+        "    import mcu\n" % MARKER,
+        "check-version.py: import klippy as a package",
+    )
+
 def t_moonraker_klipper_pin(text, cfg):
     """Repoint the pinned klipper commit at the Kalico fork.
 
@@ -783,6 +844,7 @@ FILE_TRANSFORMS = [
     ("configuration/klippy/requirements.txt", [t_klippy_requirements]),
     ("src/server/helpers/klipper-config.ts", [t_tmc2240_rref]),
     ("configuration/z-probe/beacon.cfg", [t_beacon_homing_retract]),
+    ("src/scripts/check-version.py", [t_check_version_package_import]),
 ]
 
 
