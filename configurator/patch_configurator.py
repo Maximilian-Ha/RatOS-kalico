@@ -350,6 +350,67 @@ def t_tmc2240_rref(text, cfg):
         "klipper-config.ts: rref for TMC2240",
     )
 
+def t_beacon_homing_retract(text, cfg):
+    """Bound the Z homing retract so beacon can still see the bed afterwards.
+
+    Kalico retracts TWICE in ``home_rails`` -- once before the second homing
+    pass (``homing.py:348``, which Klipper also does) and once after it
+    (``homing.py:391``, added by Kalico 72b9b995 for sensorless homing). The
+    ``homing:home_rails_end`` event fires at ``homing.py:401``, i.e. AFTER that
+    second retract.
+
+    Beacon's post-homing handler samples the sensor at whatever position the
+    toolhead is standing in when that event arrives, and replaces the homed Z
+    with the measurement (``beacon.py:2272-2278``). On Klipper the event fires
+    at the trigger point. On Kalico it fires ``homing_retract_dist`` higher.
+
+    RatOS never sets ``homing_retract_dist`` for a beacon printer -- the
+    generator emits Z homing settings only when there is no probe -- so it falls
+    to Kalico's default of 5.0 (``stepper.py:482``). With beacon's default
+    ``trigger_distance`` of 2.0 that puts the sample at 7.0mm, above the top of
+    a default-calibrated model (cal_ceil 5.0). ``freq_to_dist_raw`` returns
+    ``+inf``, and ``math.isinf`` raises
+
+        Toolhead stopped below model range
+
+    which is beacon's wording for the ``-inf`` (too close) case and is simply
+    wrong for this one -- the toolhead is too far ABOVE the bed, not below.
+
+    1.0 puts the sample at 2.0 + 1.0 = 3.0mm, inside the band with margin at
+    both ends, and keeps the second homing pass and its "Endstop still triggered
+    after retract" check. Setting 0 would also work but disables the whole
+    second-home block (``homing.py:337`` gates all of it), and leaves the
+    toolhead closer to the bed rather than further from it.
+
+    It is also strictly safer than 5.0 in the endstop-failure case: the second
+    pass is set up to descend twice the retract distance below the endstop
+    position, so 5.0 aims a failed pass at kinematic Z = -3.0 -- into the bed --
+    where 1.0 aims it at 1.0.
+
+    The constraint to preserve when changing this: ``trigger_distance`` plus
+    this value must stay below the beacon model's ceiling.
+
+    This goes in a SHIPPED file rather than the generator, deliberately. Files
+    under ``configuration/`` reach a printer by git pull; anything the generator
+    emits reaches it only on a regeneration, which destroys hand edits and which
+    a user with a broken G28 cannot safely do.
+    """
+    return sub_once(
+        text,
+        "[bed_mesh]\nmesh_min: 20,30",
+        "# %s: Kalico retracts a second time AFTER the second homing pass and\n"
+        "# only then fires homing:home_rails_end, where beacon takes the sample\n"
+        "# that becomes the homed Z. At Kalico's default retract of 5.0 that\n"
+        "# sample is taken 7mm up -- above the model -- and G28 Z fails with\n"
+        "# \"Toolhead stopped below model range\". Keep trigger_distance plus this\n"
+        "# value below the model ceiling. See docs/RISKS.md section 3.\n"
+        "[stepper_z]\n"
+        "homing_retract_dist: 1\n"
+        "\n"
+        "[bed_mesh]\nmesh_min: 20,30" % MARKER,
+        "beacon.cfg: bound the Z homing retract",
+    )
+
 def t_moonraker_klipper_pin(text, cfg):
     """Repoint the pinned klipper commit at the Kalico fork.
 
@@ -721,6 +782,7 @@ FILE_TRANSFORMS = [
     ("configuration/scripts/ratos-common.sh", [t_drop_gcode_shell_extension]),
     ("configuration/klippy/requirements.txt", [t_klippy_requirements]),
     ("src/server/helpers/klipper-config.ts", [t_tmc2240_rref]),
+    ("configuration/z-probe/beacon.cfg", [t_beacon_homing_retract]),
 ]
 
 

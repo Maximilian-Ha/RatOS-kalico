@@ -156,12 +156,80 @@ The gating is subtler than it looks: the *outer* gate uses a widened
 `homing_retract_dist: 0`. RatOS' sensorless templates are safe only because
 `min_home_dist` *defaults* to `homing_retract_dist`.
 
-For this printer X/Y home on physical endstops and Z homes on the Beacon
-virtual endstop. Beacon's model is valid only in a narrow approach band. Whether
-the extra move breaks `G28 Z` was **not** determined — only that the code
-difference is real.
+### It does break `G28 Z`. Confirmed on hardware.
 
-**This is why `G28 Z` is the first item in the test plan.**
+The first real printer failed its first `G28` with
+
+    Toolhead stopped below model range
+
+and the numbers close exactly. Z homes on the Beacon virtual endstop, whose
+`position_endstop` is beacon's `trigger_distance` (2.0). The first pass triggers
+at Z 2.0, the second pass triggers there again, and the extra retract then parks
+the toolhead at **Z 7.0**. `homing:home_rails_end` fires only after that
+(`homing.py:401`), and beacon's handler samples the sensor *at that position*
+and makes the result the homed Z (`beacon.py:2272-2278`). This unit's calibrated
+model tops out at **4.999931**, so the sample is `+inf` and the handler raises.
+
+On Klipper the same event fires at the trigger point, inside the band.
+
+**The message is misleading.** `freq_to_dist_raw` returns `+inf` when the sensor
+is too *far* and `-inf` when too *close* (`beacon.py:1719-1727`), and "below
+model range" is beacon's wording for the `-inf` case (`beacon.py:557-559`). The
+handler tests bare `math.isinf`, so both signs produce the "below" text. Here the
+toolhead is too far **above** the bed. Do not use the wording as evidence about
+direction.
+
+Why the Z rail takes this path at all: `probe:z_virtual_endstop` is deliberately
+not classified as a virtual endstop (`stepper.py:443-445`), so
+`use_sensorless_homing` is False and the gate at `homing.py:349` lets the second
+pass and its retract run.
+
+### The fix, and why it is not `homing_retract_dist: 0`
+
+`homing_retract_dist: 1` puts the sample at 2.0 + 1.0 = 3.0, inside the band with
+margin at both ends, and keeps the second homing pass together with its "Endstop
+still triggered after retract" check.
+
+`0` also stops the error, but `homing.py:337` gates the *entire* second-home
+block on it, so it removes the second pass as well — and it leaves the toolhead
+at the first pass's halt point, i.e. *closer* to the bed than upstream Klipper
+leaves it, not further away.
+
+A smaller retract is also strictly safer than the 5.0 default: the second pass is
+set up to descend twice the retract distance below the endstop position, so 5.0
+aims a failed pass at kinematic Z −3.0, into the bed. 1.0 aims it at +1.0.
+
+The fork ships this in `configuration/z-probe/beacon.cfg`, which is a **shipped**
+file rather than a generated one — it reaches every beacon user by git pull, with
+no regeneration. A machine already running takes the same line in its own
+`[stepper_z]` block in `printer.cfg`, which is last in merge order and which
+regeneration never touches. Constraint to preserve if the value is ever changed:
+`trigger_distance` plus the retract must stay below the model's ceiling.
+
+### Why not patch `homing.py`
+
+Three shapes were evaluated; two are disqualified.
+
+- **Move the event before the retract.** Rejected. `gcode_move` resynchronises
+  its G-code position *only* on `home_rails_end`, and every `G1` commands all
+  axes from `last_position` — so any toolhead move after the event leaves it
+  stale by the retract distance.
+- **Delete the block.** This is Klipper's semantics and is mechanically clean,
+  but it silently changes X, Y and `dual_carriage` too, parking each carriage
+  exactly on its limit with zero margin instead of 5 mm clear of it.
+- **Gate it on `use_sensorless_homing`.** The only defensible firmware shape, and
+  it preserves the sensorless case the block was added for (Kalico `72b9b995`).
+
+Even that one is not worth shipping while a config line does the same job:
+`homing.py`'s sensorless region is the most churned part of the file in Kalico's
+history, so the hunk would be the most conflict-prone thing this fork carries,
+and every conflict fails the build closed and blocks printer updates.
+
+### One thing not to do
+
+`variable_beacon_contact_z_homing: True` makes the error disappear and is the
+most dangerous option on the table. It routes `G28 Z` to `BEACON_AUTO_CALIBRATE`,
+which touches the nozzle to the bed on purpose — once per `G28`, every `G28`.
 
 ---
 

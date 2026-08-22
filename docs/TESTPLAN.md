@@ -264,7 +264,36 @@ Each step, one at a time, watching the machine.
 | 1 | `M84` | No error. This is the `clear_homing_state` path — it is called on *every* M84 and raises `AttributeError` on an unpatched kinematics. |
 | 2 | `G28 X` | Homes, stops at the endstop. |
 | 3 | `G28 Y` | Same. |
-| 4 | `G28 Z` | **The risky one.** Kalico adds a second retract, after the second homing pass, that upstream Klipper does not do. Beacon's model is only valid in a narrow band. Be ready to stop. See `docs/RISKS.md` §3. |
+| 4 | `G28 Z` | **The risky one**, and it *will* fail unless `[stepper_z] homing_retract_dist` is set — see below. Be ready to stop. `docs/RISKS.md` §3. |
+
+**X and Y first is mandatory, not a nicety.** RatOS' `HOME_Z` calls a real
+`action_emergency_stop` when X/Y are not homed, because it homes Z in the middle
+of the bed and cannot resolve that position otherwise.
+
+**Before the first `G28 Z`, confirm the retract is bounded:**
+
+```bash
+grep -n -A8 '^\[stepper_z\]' ~/printer_data/config/printer.cfg
+```
+
+`homing_retract_dist` must be there. Without it Kalico's default of 5.0 applies,
+the post-homing sample is taken ~7 mm up, outside beacon's model, and homing
+aborts with the misleading `Toolhead stopped below model range`. Add
+`homing_retract_dist: 1` to that block if it is missing. The fork ships the same
+line in `z-probe/beacon.cfg`, but a machine that has not pulled since will not
+have it yet.
+
+**What the first `G28 Z` should look like, hand on the e-stop:** a fast descent
+to roughly 2 mm above the bed, a short lift, a slow second descent to the same
+point, a second short lift of about 1 mm, then a pause of a few seconds while
+beacon samples. Stop it if the nozzle keeps descending past the point where it
+first stopped, or if it touches the bed at all — neither belongs in a proximity
+home.
+
+**Do not trust the resulting Z for a print while the machine is cold.** The saved
+beacon model was calibrated hot; homing cold makes beacon's temperature
+compensation extrapolate. Home cold to prove the motion is right, then re-home
+at printing temperature before the first layer.
 | 5 | `G28` (cold, Z unhomed) | Exercises `ratos_homing`'s z-hop path with `z_hop: 15` — the `set_position(homing_axes="z")` fix. |
 | 6 | `SET_KINEMATIC_POSITION` | The `force_move` → `clear_homing_state` path RatOS' own belt-tension and shaper macros use. |
 | 7 | `T0`, `T1`, then COPY and MIRROR | IDEX. Confirm **both carriages move the direction you expect** before anything else. |

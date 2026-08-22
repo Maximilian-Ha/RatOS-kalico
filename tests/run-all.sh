@@ -121,10 +121,15 @@ for repo_path in "$KALICO:scripts/klippy-requirements.txt:numpy>=1.26.4,<2" \
 	"$CONF:configuration/klippy/requirements.txt:numpy>=1.26.4,<2" \
 	"$CONF:configuration/moonraker.conf:pinned_commit: $KALICO_COMMIT" \
 	"$CONF:configuration/scripts/klipper-fork-migration.sh:for _ratos_kalico_owned in gcode_shell_command.py belay.py; do" \
-	"$CONF:src/server/helpers/klipper-config.ts:section.push(\`rref: 12000\`)"; do
+	"$CONF:src/server/helpers/klipper-config.ts:section.push(\`rref: 12000\`)" \
+	"$CONF:configuration/z-probe/beacon.cfg:homing_retract_dist: 1"; do
 	repo="${repo_path%%:*}"; rest="${repo_path#*:}"
 	file="${rest%%:*}"; needle="${rest#*:}"
-	if git -C "$repo" show "HEAD:$file" 2>/dev/null | grep -qF "$needle"; then
+	# NOT `grep -qF`: -q exits at the first match, git show gets SIGPIPE, and
+	# under `set -o pipefail` the pipeline reports 141 -- so this gate cried
+	# wolf on exactly the files with an early match in a large file, and
+	# looked flaky rather than wrong. Plain grep reads to EOF.
+	if git -C "$repo" show "HEAD:$file" 2>/dev/null | grep -F "$needle" >/dev/null; then
 		printf 'ok: %s carries %s\n' "$(basename "$file")" "$needle"
 	else
 		printf '!!! FAILED: the COMMIT for %s does not carry %s\n' "$file" "$needle"
