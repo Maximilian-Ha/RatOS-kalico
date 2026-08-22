@@ -1,0 +1,148 @@
+# Installed into the fork as .github/workflows/publish-kalico.yml by
+# configurator/patch_configurator.py, which substitutes the branch names from
+# fork.conf. Edit the template there, never this generated copy -- the next
+# build overwrites it.
+#
+# Forked from RatOS' publish-v2.1.x.yml with three deliberate differences:
+#
+#   1. Triggered by a push to the source branch (and manually), not by a
+#      workflow_run of "CI". A fresh fork has no CI history for workflow_run to
+#      key off, and the fork's source branch is rebuilt by
+#      build-configurator-fork.sh rather than developed on.
+#   2. No nickderobertis/last-successful-commit-action. It looks up prior runs
+#      of a workflow *by filename*, so on a fork's very first publish it has
+#      nothing to find and the commit-count step produces garbage. The commit
+#      message just names the source commit instead.
+#   3. Publishes straight to the deployment branch. Upstream goes via
+#      staging/ and has a human fast-forward it; for a single-owner fork that
+#      is ceremony without a reviewer.
+#
+# The "Delete files not needed in deployment" list is copied verbatim from
+# upstream and is coupled to RatOS' source layout. If a RatOS release moves
+# directories under src/, this list has to move with it.
+
+name: Publish @@DEPLOYMENT_BRANCH@@
+
+on:
+  push:
+    branches: ["@@SOURCE_BRANCH@@"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build and Push
+    steps:
+      - name: Set variables
+        id: variables
+        shell: bash
+        run: |
+          echo "target-branch=@@DEPLOYMENT_BRANCH@@" >> "$GITHUB_OUTPUT"
+          echo "src-branch=@@SOURCE_BRANCH@@" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.variables.outputs.src-branch }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18.x
+
+      - uses: pnpm/action-setup@v4
+        name: Install pnpm
+        id: pnpm-install
+        with:
+          version: 9.1
+          run_install: false
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "store_path=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        name: Setup pnpm cache
+        with:
+          path: ${{ steps.pnpm-cache.outputs.store_path }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - uses: actions/cache/restore@v4
+        name: Restore Next.js cache
+        id: cache-nextjs-restore
+        with:
+          path: |
+            ${{ github.workspace }}/src/build/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('src/**/*.js', 'src/**/*.jsx', 'src/**/*.ts', 'src/**/*.tsx') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-
+
+      - name: Install all dependencies
+        working-directory: ./src
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: ./src
+        run: pnpm build
+
+      - name: Build cli
+        working-directory: ./src
+        run: pnpm build:cli
+
+      - uses: actions/cache/save@v4
+        name: Save Next.js cache
+        id: cache-nextjs-save
+        with:
+          path: |
+            ${{ github.workspace }}/src/build/cache
+          key: ${{ steps.cache-nextjs-restore.outputs.cache-primary-key }}
+
+      - name: Delete files not needed in deployment
+        working-directory: ./src
+        run: rm -rf __tests__ app pages components coverage data helpers hooks moonraker env recoil server utils zods test-setup.ts test-setup-global.ts vitest.config.mts tsconfig.vitest.json copy-files-from-to.json components.json postcss.config.js prettier.config.mjs tailwind.config.ts
+
+      - name: Rename src/ to app/
+        working-directory: ./
+        run: mv src app
+
+      - name: Modify .env file to fix paths pointing to src/
+        working-directory: ./app
+        run: |
+          sed -i 's|/src/scripts|/app/scripts|g' .env
+
+      # Moonraker hard-errors if either of these is missing from the branch it
+      # pulls, and the failure surfaces on the printer rather than here. Cheap
+      # to assert while we still have a runner.
+      - name: Verify the deployment tree is usable
+        shell: bash
+        run: |
+          test -f configuration/scripts/ratos-common.sh \
+            || { echo "configuration/scripts/ratos-common.sh missing"; exit 1; }
+          test -f configuration/klippy/requirements.txt \
+            || { echo "configuration/klippy/requirements.txt missing"; exit 1; }
+          test -d app \
+            || { echo "app/ missing -- moonraker's service unit would have nothing to serve"; exit 1; }
+          grep -q '/app/scripts' app/.env \
+            || { echo "app/.env still points at /src/scripts"; exit 1; }
+          echo "deployment tree looks sane"
+
+      - name: Publish to ${{ steps.variables.outputs.target-branch }}
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: .
+          commit-message: |
+            Deploy @@SOURCE_BRANCH@@ ${{ github.sha }}
+
+            Built from @@FORK_URL_HTML@@/commit/${{ github.sha }}
+          git-config-name: github-actions[bot]
+          git-config-email: 41898282+github-actions[bot]@users.noreply.github.com
+          branch: ${{ steps.variables.outputs.target-branch }}
