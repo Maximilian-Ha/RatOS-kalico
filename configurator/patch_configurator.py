@@ -247,6 +247,56 @@ def t_migration_url_normalization(text, cfg):
     return text
 
 
+def t_migration_yield_shell_command(text, cfg):
+    """Remove RatOS' gcode_shell_command.py symlink before checking out Kalico.
+
+    Kalico tracks ``klippy/extras/gcode_shell_command.py``. RatOS symlinks its
+    own copy over exactly that path. What happens next depends entirely on
+    whether that path is listed in ``.git/info/exclude``, and the two outcomes
+    could not be further apart -- verified by reproduction on git 2.43:
+
+    * listed   -> git treats the symlink as expendable and ``checkout -b``
+                  silently replaces it with Kalico's file. This is the outcome
+                  the fork wants; see ``t_drop_gcode_shell_extension``.
+    * unlisted -> ``error: The following untracked working tree files would be
+                  overwritten by checkout ... Aborting``. In this script that is
+                  GIT_CHECKOUT_REMOTE_FAILED, which returns 1 from
+                  checkout_target_branch and 6 from the migration -- and because
+                  origin is never repointed, the migration re-runs and fails
+                  again on *every* subsequent update. The printer never reaches
+                  Kalico and no amount of retrying helps.
+
+    Whether the line is present is a property of the printer's history, not of
+    anything this fork controls: RatOS writes it when it registers the
+    extension, and Moonraker's Hard Recover deletes the whole ``.git``
+    directory along with it. So the safe state is not something to hope for.
+
+    Deleting the link first makes both paths converge on the good one. Guarded
+    on -L so it can only ever remove a symlink, never a real file, and it never
+    touches the source in printer_data. After the first migration the path is a
+    regular tracked file and the guard makes this a no-op -- which matters,
+    because this script runs on every update, not just once.
+    """
+    return sub_once(
+        text,
+        "    # Check if target branch already exists locally\n",
+        "    # %s: Kalico tracks klippy/extras/gcode_shell_command.py, which RatOS\n"
+        "    # symlinks. If that symlink is not in .git/info/exclude, the checkout\n"
+        "    # below refuses to overwrite it and this script returns 6 -- on every\n"
+        "    # update, forever. The fork cedes this file to Kalico anyway (see\n"
+        "    # ratos-common.sh), so drop the link and let the checkout supply the\n"
+        "    # real file. -L means this can never delete anything but a symlink,\n"
+        "    # and never the source in printer_data.\n"
+        "    if [ -L \"$KLIPPER_DIR/klippy/extras/gcode_shell_command.py\" ]; then\n"
+        "        log_info \"Removing RatOS' gcode_shell_command.py symlink; Kalico ships its own.\" \"checkout_branch\"\n"
+        "        rm -f \"$KLIPPER_DIR/klippy/extras/gcode_shell_command.py\"\n"
+        "    fi\n"
+        "\n"
+        "    # Check if target branch already exists locally\n" % MARKER,
+        "migration: yield gcode_shell_command.py to Kalico",
+    )
+
+
 def t_moonraker_klipper_pin(text, cfg):
     """Repoint the pinned klipper commit at the Kalico fork.
 
@@ -602,6 +652,7 @@ FILE_TRANSFORMS = [
             t_migration_url_normalization,
             t_migration_constants,
             t_migration_allowlist,
+            t_migration_yield_shell_command,
         ],
     ),
     (

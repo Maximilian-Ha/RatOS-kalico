@@ -71,6 +71,57 @@ else
 	fail "$KLIPPER_DIR is not a git repository"
 fi
 
+
+# --- symlinks in klippy/extras ----------------------------------------------
+# The migration is checkout + reset --hard, with no `git clean` anywhere, so an
+# untracked symlink survives it -- UNLESS the target tree TRACKS the same path.
+# Kalico tracks 185 files under klippy/extras and klippy/kinematics, and exactly
+# one of them collides with what RatOS and the third-party addons link in.
+# tests/check_collisions.py re-derives this list from the built forks, so it
+# fails loudly rather than going stale if Kalico ever starts tracking another.
+KALICO_TRACKED_COLLISIONS="gcode_shell_command.py"
+
+say "klippy/extras symlinks"
+LINKS=0
+for f in "$KLIPPER_DIR"/klippy/extras/* "$KLIPPER_DIR"/klippy/kinematics/*; do
+	[ -L "$f" ] || continue
+	LINKS=$((LINKS + 1))
+	b="$(basename "$f")"
+	rel="klippy/$(basename "$(dirname "$f")")/$b"
+	if [ ! -e "$f" ]; then
+		fail "$rel is a DANGLING symlink -> $(readlink "$f")
+         Its target does not exist. Fix or remove it before migrating: RatOS
+         only repairs links for extensions registered with it, and it reports
+         success while leaving a broken one in place."
+	elif printf '%s\n' $KALICO_TRACKED_COLLISIONS | grep -qxF "$b"; then
+		if grep -qs "$rel" "$KLIPPER_DIR/.git/info/exclude"; then
+			attn "$rel will be REPLACED by Kalico's own tracked file, which is
+         deliberate -- see docs/RISKS.md section 12. The source it points at
+         under printer_data is not touched."
+		else
+			fail "$rel is a symlink and is NOT listed in .git/info/exclude.
+         Kalico tracks this exact path, so \`git checkout -b\` refuses to
+         overwrite it and the migration aborts with GIT_CHECKOUT_REMOTE_FAILED.
+         Because the migration never repoints origin, it re-runs and fails the
+         same way on EVERY update -- the printer would never reach Kalico.
+         Reproduced on git 2.43. Fix it first, either way works:
+             printf '$rel\n' >> $KLIPPER_DIR/.git/info/exclude
+             rm $KLIPPER_DIR/$rel
+         then re-run this preflight."
+		fi
+	else
+		ok "$rel -> $(readlink "$f")"
+	fi
+done
+if [ "$LINKS" -eq 0 ]; then
+	attn "no symlinks at all under klippy/ -- unexpected on a RatOS install"
+else
+	attn "Write the list above down. Nothing recreates a third-party symlink
+         that is not registered with RatOS, and klipper_tmc_autotune's links
+         are in that category. They survive the migration, but not a Moonraker
+         Hard Recover, which deletes ~/klipper outright. If they ever go
+         missing, ~/klipper_tmc_autotune/install.sh re-creates them."
+fi
 # --- the klippy venv: where the one hard blocker lives ----------------------
 say "Klippy virtualenv"
 PY="$HOME/klippy-env/bin/python"

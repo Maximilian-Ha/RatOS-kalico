@@ -104,12 +104,23 @@ python3 "$SCRIPT_DIR/check_undefined_names.py" \
 	"$CONF/configuration/klippy/resonance_generator.py" ||
 	FAILED=1
 
+printf '\n--- extras collisions ---\n'
+# preflight hardcodes which paths Kalico takes over from RatOS, because it runs
+# on a printer with no checkout. Re-derive that set here so it cannot go stale:
+# a path Kalico newly tracks turns a surviving symlink into a migration that
+# aborts on every update.
+python3 "$SCRIPT_DIR/check_collisions.py" "$KALICO" "$CONF" \
+	"$SCRIPT_DIR/../scripts/preflight.sh" \
+	"$SCRIPT_DIR/../scripts/preflight-standalone.sh" ||
+	FAILED=1
+
 # --- 5. the published tree is what was built -------------------------------
 
 printf '\n--- committed tree ---\n'
 for repo_path in "$KALICO:scripts/klippy-requirements.txt:numpy>=1.26.4,<2" \
 	"$CONF:configuration/klippy/requirements.txt:numpy>=1.26.4,<2" \
-	"$CONF:configuration/moonraker.conf:pinned_commit: $KALICO_COMMIT"; do
+	"$CONF:configuration/moonraker.conf:pinned_commit: $KALICO_COMMIT" \
+	"$CONF:configuration/scripts/klipper-fork-migration.sh:if [ -L \"\$KLIPPER_DIR/klippy/extras/gcode_shell_command.py\" ]; then"; do
 	repo="${repo_path%%:*}"; rest="${repo_path#*:}"
 	file="${rest%%:*}"; needle="${rest#*:}"
 	if git -C "$repo" show "HEAD:$file" 2>/dev/null | grep -qF "$needle"; then

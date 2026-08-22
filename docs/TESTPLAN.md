@@ -35,6 +35,22 @@ Fix every `[FAIL]` first. Then, independently of the script:
    Pointing Moonraker at a source branch leaves the configurator service with
    nothing to serve.
 
+5. **Record the symlinks in `klippy/extras`, and check the one that can brick
+   the update.** Third-party modules live outside `~/klipper` and are linked
+   into it; the migration repoints that repository underneath them.
+
+   ```bash
+   ls -la ~/klipper/klippy/extras/ > ~/extras.pre-kalico.txt
+   cp ~/klipper/.git/info/exclude ~/git-exclude.pre-kalico.txt
+   grep -n gcode_shell ~/klipper/.git/info/exclude
+   ls -l ~/klipper/klippy/extras/gcode_shell_command.py
+   ```
+
+   Preflight `[FAIL]`s if `gcode_shell_command.py` is a symlink that is **not**
+   in `.git/info/exclude`. Fix that before anything else: Kalico tracks that
+   exact path, so `git checkout` refuses to overwrite the link and the
+   migration exits 6 — on every update, permanently. `docs/RISKS.md` §12.
+
 ---
 
 ## Stage 1 — switch the firmware, do not move anything
@@ -69,6 +85,28 @@ grep APP_NAME ~/klipper/klippy/__init__.py   # must say Kalico
 ~/klippy-env/bin/pip check
 ~/klippy-env/bin/python -c "import numpy,scipy,jinja2,pygam;print(numpy.__version__,scipy.__version__,jinja2.__version__,pygam.__version__)"
 ```
+
+And confirm the symlinks came through:
+
+```bash
+diff ~/extras.pre-kalico.txt <(ls -la ~/klipper/klippy/extras/)
+```
+
+Exactly one difference is expected: `gcode_shell_command.py` is now a regular
+file instead of a symlink. That is deliberate — Kalico ships its own, the fork
+cedes it, and the source under `printer_data` is untouched. Everything else,
+`autotune_tmc.py` and `beacon.py` above all, must still be a symlink and must
+still resolve:
+
+```bash
+for f in autotune_tmc motor_constants beacon; do
+  [ -e ~/klipper/klippy/extras/$f.py ] && echo "ok   $f" || echo "GONE $f"
+done
+```
+
+If Klippy later reports `Unknown config object 'autotune_tmc stepper_x'`, the
+links did not survive. Re-create them with `~/klipper_tmc_autotune/install.sh`
+— do **not** regenerate the config to make the error go away.
 
 **Do not upgrade the venv unless something above actually failed to import.**
 
@@ -252,6 +290,23 @@ sudo ~/printer_data/config/RatOS/scripts/ratos-update.sh
 
 The last command runs the *upstream* migration script again, which pulls
 `~/klipper` back to `Rat-OS/klipper` at its pinned commit.
+
+### If someone pressed Hard Recover
+
+Moonraker's Hard Recover deletes `~/klipper` outright — every symlink in
+`klippy/extras` and `.git/info/exclude` with it. `ratos-update.sh` rebuilds the
+links RatOS knows about, `beacon.py` included. It does **not** rebuild
+`klipper_tmc_autotune`'s three, because that addon does not register with RatOS:
+
+```bash
+sudo systemctl stop klipper
+~/klipper_tmc_autotune/install.sh
+sudo ~/printer_data/config/RatOS/scripts/ratos-update.sh
+sudo systemctl restart klipper
+```
+
+Until those three are back, Klippy will not start: `printer.cfg` declares
+`[autotune_tmc]` on seven steppers. `docs/RISKS.md` §11 and §12.
 
 If you changed the venv, restore it from the snapshot — and restore it
 *together with* the checkout, so the pair cannot drift. RatOS' klipper pins

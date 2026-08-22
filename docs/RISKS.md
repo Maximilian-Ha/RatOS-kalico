@@ -295,8 +295,10 @@ Recorded so nobody re-litigates them:
   it rewrites any top-level module name that exists under `klippy/`, not a fixed
   list. `import chelper`, `import pins`, `from mcu import MCU`,
   `import configfile` and friends all resolve.
-- **Module name collisions.** Exactly one, `gcode_shell_command.py`, handled.
-  `ratos_hybrid_corexy` does not collide with Kalico's kinematics.
+- **Module name collisions.** Exactly one, `gcode_shell_command.py`, handled;
+  `ratos_hybrid_corexy` does not collide with Kalico's kinematics. The state
+  of that one symlink turned out to matter more than the collision itself —
+  see §12.
 - **Config option coverage.** Among sections Kalico implements, `log_points` was
   the only unknown option in the whole resolved include tree — and the port
   introduces it.
@@ -323,3 +325,80 @@ Fixing it properly means repointing `origin` in the migration script, which
 changes what Moonraker's klipper entry sees — an interaction that has not been
 verified. Until then: do not use Mainsail's Recover buttons on a migrated
 machine. Re-run `ratos-update.sh` instead.
+
+**Hard Recover destroys more than the checkout.** It clones into a backup
+location and then `shutil.rmtree`s `~/klipper` — which takes with it every
+symlink in `klippy/extras` *and* `.git/info/exclude`. RatOS rebuilds the links
+for extensions registered with it, `beacon.py` among them, on the next
+`ratos-update.sh`. It does not rebuild `klipper_tmc_autotune`'s three, because
+that addon does not register with RatOS: `autotune_tmc.py`, `motor_constants.py`
+and `motor_database.cfg` have to be re-created by hand, or by re-running
+`~/klipper_tmc_autotune/install.sh`. Until they are, Klippy will not start —
+`printer.cfg` declares `[autotune_tmc]` on seven steppers. See §12.
+
+---
+
+## 12. Symlinks in `klippy/extras`, and the one path Kalico takes over
+
+RatOS and every third-party addon install their klippy modules by symlinking a
+file from their own checkout into `~/klipper/klippy/extras`. The migration
+repoints that whole directory's repository. What happens to the links is not
+uniform, and the difference matters more than it looks.
+
+### The mechanism
+
+`klipper-fork-migration.sh` touches the working tree in exactly four places —
+`checkout -b "$temp_branch"` (:590), `checkout "$TARGET_BRANCH"` (:601),
+`checkout -b "$TARGET_BRANCH" "$RATOS_FORK_REMOTE/$TARGET_BRANCH"` (:608) and
+`reset --hard "$TARGET_COMMIT"` (:650). There is no `git clean`, no `stash`, no
+`rm`, `mv` or `cp` anywhere in the script. Git deletes an untracked path only
+when a **tracked** path in the target tree collides with it.
+
+So the question reduces to: which basenames does Kalico track that RatOS or an
+addon also links in? Of the 185 files Kalico tracks under `klippy/extras` and
+`klippy/kinematics`, exactly **one** — `gcode_shell_command.py`.
+`tests/check_collisions.py` re-derives that set from the built forks and fails
+if it ever changes, because `scripts/preflight*.sh` has to hardcode it.
+
+`autotune_tmc.py`, `motor_constants.py`, `motor_database.cfg` and `beacon.py`
+do not collide, and therefore survive both the checkout and the `reset --hard`.
+Their targets are outside `~/klipper`, so repointing the repository cannot
+dangle them either.
+
+### The inversion: being *excluded* is the dangerous state
+
+For the one path that does collide, everything depends on whether
+`klippy/extras/gcode_shell_command.py` appears in `~/klipper/.git/info/exclude`
+— which RatOS writes when it registers the extension. Reproduced on git 2.43:
+
+| in `.git/info/exclude` | `git checkout -b` does |
+|---|---|
+| yes | silently replaces the symlink with Kalico's file |
+| no | `error: The following untracked working tree files would be overwritten by checkout … Aborting` |
+
+The second case is not a one-off. It surfaces as `GIT_CHECKOUT_REMOTE_FAILED`,
+`checkout_target_branch` returns 1 and the migration returns 6 — and since the
+migration never repoints `origin` (§11), it re-runs and fails identically on
+**every** subsequent update. The printer never reaches Kalico, and no amount of
+retrying changes that.
+
+This inverts the intuition. A symlink listed in the exclude file is the one
+that gets destroyed; a symlink *not* listed is the one that blocks the
+migration. Neither state is visible without looking.
+
+### What the fork does about it
+
+Two things, because the preflight alone cannot fix a machine.
+
+`configurator/patch_configurator.py` adds `t_migration_yield_shell_command`,
+which removes the symlink — guarded on `-L`, so it can only ever remove a link
+and never a real file or the source under `printer_data` — immediately before
+the checkout. Both states then converge on the good one. After the first
+migration the path is a regular tracked file and the guard makes it a no-op,
+which matters because this script runs on every update.
+
+`scripts/preflight*.sh` reports every symlink under `klippy/`, fails on a
+dangling one, and fails specifically on a colliding-but-unexcluded one with the
+two commands that fix it. The fork cedes `gcode_shell_command.py` to Kalico
+deliberately — see `t_drop_gcode_shell_extension` — so the replacement
+itself is expected, and is reported as a note rather than a failure.

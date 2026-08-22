@@ -136,9 +136,17 @@ The hard blockers, each verified against the real sources:
   asserts so the test cannot decay into a tautology.
 - **`resonance_generator`.** Kalico widened `ResonanceTestExecutor.run_test`
   from 3 to 5 parameters, so `GENERATE_RESONANCES` raises `TypeError` today.
-- **`gcode_shell_command.py`.** Kalico ships and git-tracks its own; RatOS'
-  symlink is silently clobbered by the migration's `reset --hard`, and *both*
+- **`gcode_shell_command.py`, and the symlink state around it.** Kalico ships
+  and git-tracks its own; RatOS' symlink is silently clobbered, and *both*
   RatOS verifiers report success anyway. The fork cedes the file deliberately.
+  The sharper problem is the *other* state: if that symlink is not listed in
+  `.git/info/exclude`, `git checkout` refuses to overwrite it and the migration
+  exits 6 — on every update, permanently. Reproduced on git 2.43. The migration
+  now drops the link first, guarded so it can only ever remove a symlink.
+  It is the only one of the 185 paths Kalico tracks under `klippy/extras` and
+  `klippy/kinematics` that collides with anything RatOS or an addon links in;
+  `tests/check_collisions.py` re-derives that set so preflight's hardcoded copy
+  cannot go stale. `docs/RISKS.md` §12.
 - **`sweeping_period`.** Kalico defaults it to `0.0` where Klipper uses `1.2`,
   silently degrading every sweep to plain vibration pulses. Pinned.
 - **A real 600 printer type.** RatOS offers this machine at 300/400/500 only,
