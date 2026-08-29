@@ -104,6 +104,15 @@ python3 "$SCRIPT_DIR/check_undefined_names.py" \
 	"$CONF/configuration/klippy/resonance_generator.py" ||
 	FAILED=1
 
+printf '\n--- maintenance macro ---\n'
+# MAINTENANCE_MODE is a Jinja template Klippy renders in full before its first
+# line runs, so a typo in it is a config error at startup rather than a warning.
+# Render it from the tree the patcher actually shipped: that checks the macro
+# and that it reached the printer's config directory in one go.
+run "MAINTENANCE_MODE renders and parks where it says" \
+	python3 "$SCRIPT_DIR/test_maintenance_macro.py" \
+	"$CONF/configuration/printers/v-core-4-1-idex-600/maintenance.cfg"
+
 printf '\n--- extras collisions ---\n'
 # preflight hardcodes which paths Kalico takes over from RatOS, because it runs
 # on a printer with no checkout. Re-derive that set here so it cannot go stale:

@@ -42,6 +42,7 @@ the value running on the machine today.
 | `.../v-core-4-1-idex-600/v-core-4-idex.png` | The configurator expects the image next to the definition. Copied from the stock printer at build time. |
 | `configuration/printers/v-core-4-1-idex/600.cfg` | **The stock folder, not the new one.** The shared template hardcodes `[include RatOS/printers/v-core-4-1-idex/${size}.cfg]`. |
 | `.../v-core-4-1-idex-600/printer.cfg.overrides` | Documentation that ships to the printer, next to the definition. |
+| `.../v-core-4-1-idex-600/maintenance.cfg` | An optional macro the operator includes from `printer.cfg`. Shipped rather than pasted so it follows updates. |
 
 The definition points `"template"` at the stock `v-core-4-1-idex.ts`, so no new
 template has to be bundled — only definitions are read at runtime.
@@ -69,6 +70,47 @@ short:
 
 Optionally `[gcode_macro T1] variable_parking_position: 672` — the configurator
 computes 673, one millimetre further out than what runs today.
+
+## The MAINTENANCE_MODE macro
+
+`maintenance.cfg` ships alongside the definition and defines one macro Mainsail
+lists as a button — a service position for working on the machine:
+
+| Step | Where | Why that value |
+|---|---|---|
+| bed to mid height | `Z327.5` | half of the 655 mm Z travel. Moved **first**: Z only ever increases the gap between nozzles and bed, so every later move starts with clearance. |
+| gantry to the front | `Y4` | `axis_minimum.y` is −1, plus a 5 mm margin off the limit. |
+| toolheads centred | T0 `X265`, T1 `X335` | both cannot sit on the bed centre at X300 — `safe_distance` is 60 mm — so they straddle it, 70 mm apart. |
+
+It homes what is unhomed (`MAYBE_HOME`), refuses to run while a print is
+printing or paused, and drops out of copy/mirror mode first, because the
+carriages move as a pair in those and `PARK_TOOLHEAD` is a no-op.
+
+The carriages are parked at their outer positions (−73 / 673) before closing in
+on the centre. Going straight to the centre from wherever they happen to be can
+put them closer than `safe_distance` mid-move, which Klipper aborts; from the
+parking positions the inward moves cannot.
+
+`Z=`, `Y=` and `SPACING=` override the three targets for one call; the
+`variable_` lines at the top of the macro change the defaults permanently. Every
+target is clamped to the axis limits, and `SPACING` is raised to `safe_distance`
+if it is set lower.
+
+It is **not** included by anything. Add
+
+```
+[include RatOS/printers/v-core-4-1-idex-600/maintenance.cfg]
+```
+
+to `printer.cfg` below `[include RatOS.cfg]` — or, on a machine still running
+the hand-patched 500 config, paste the file's contents into `printer.cfg`, since
+that directory does not exist there yet.
+
+`tests/test_maintenance_macro.py` renders the macro with a stand-in for the
+600's printer object and checks the coordinates above. A gcode_macro is a Jinja
+template Klippy renders in full before its first line executes, so a typo in it
+is a startup error on the printer — this is the only place that can catch it
+off-machine.
 
 ## When to switch the machine over
 

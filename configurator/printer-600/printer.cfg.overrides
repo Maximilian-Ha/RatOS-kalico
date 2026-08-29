@@ -50,3 +50,20 @@ safe_distance: 60
 #------------------------------------------------------------------------------------------------------------
 #[gcode_macro T1]
 #variable_parking_position: 672
+
+#------------------------------------------------------------------------------------------------------------
+# 5) MAINTENANCE_MODE (optional, not an override)
+#
+# maintenance.cfg, next to this file, defines a MAINTENANCE_MODE macro that
+# Mainsail lists as a button: bed to mid height (Z327.5), gantry to the front
+# (Y4), both toolheads centred on the bed (T0 at X265, T1 at X335 -- they
+# straddle the centre line because safe_distance is 60mm).
+#
+# It is not included by anything. Add this line to printer.cfg, below
+# [include RatOS.cfg]:
+#
+#     [include RatOS/printers/v-core-4-1-idex-600/maintenance.cfg]
+#
+# On a machine that is not on the 600 printer type yet, that path does not
+# exist -- paste the contents of maintenance.cfg into printer.cfg instead.
+#------------------------------------------------------------------------------------------------------------
