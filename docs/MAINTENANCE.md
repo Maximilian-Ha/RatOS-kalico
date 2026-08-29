@@ -88,10 +88,14 @@ and `configuration/klippy/requirements.txt` survived and that `app/.env` no
 longer points at `/src/scripts`. Moonraker hard-errors on the first two, and
 that error surfaces on the printer rather than in CI.
 
-**Caveats.** The "Delete files not needed in deployment" list is copied verbatim
+**Caveat.** The "Delete files not needed in deployment" list is copied verbatim
 from upstream and is coupled to RatOS' source layout — if a release moves
-directories under `src/`, that list moves with it. And this workflow has never
-actually run: the pnpm build is unproven here. Watch the first run.
+directories under `src/`, that list moves with it.
+
+The workflow itself is no longer unproven: every push to the source branch so
+far has published successfully, in about two minutes. Read the run rather than
+assuming it, though — a green publish means the branch was written, not that
+the printer accepted it.
 
 ---
 
