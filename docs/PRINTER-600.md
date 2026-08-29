@@ -128,8 +128,11 @@ assuming one pass covers both.
 
 Your own includes — `buffer.cfg`, `LEDS.cfg`, `filament_sensor.cfg`,
 `Filter.cfg`, the nozzle wipe/scrub macros, the chamber heater and the
-three-zone bed — are untouched by this. None of them depend on size or
-`bedMargin`.
+four-zone bed — are untouched by this. None of them depend on size or
+`bedMargin`. The bed zones do depend on the bed being 600 × 600: if you ever
+regenerate at a different size, the rectangles in
+[`machine/bed-zones.cfg`](../machine/bed-zones.cfg) have to follow. See
+[`docs/BED-ZONES.md`](BED-ZONES.md).
 
 ## What was verified, and what was not
 

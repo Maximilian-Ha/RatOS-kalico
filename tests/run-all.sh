@@ -31,6 +31,13 @@ need git
 need python3
 ensure_work_dir
 
+# --- 0. offline checks, before anything needs the network ------------------
+
+# The bed zone macros are executed, not read: tests/test_bed_zones.py runs the
+# templates in machine/bed-zones.cfg through jinja2 with a fake printer and
+# checks which heaters end up with a target. Needs no upstream and no printer.
+run "bed zone macros" python3 "$SCRIPT_DIR/test_bed_zones.py"
+
 # --- 1. build both forks from pristine upstream ----------------------------
 
 say "Building the Kalico fork from upstream"

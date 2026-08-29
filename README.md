@@ -216,13 +216,24 @@ the earlier analysis got them wrong in both directions:
 fork.conf                     repo URLs and branches — the only place they live
 kalico/                       the firmware port + its provenance
 configurator/                 the RatOS delta, as anchored transforms
+machine/                      config for this machine's own hardware, to include
+                              from printer.cfg — not part of either fork
 scripts/                      build the forks; preflight and verify a printer
 tests/                        offline proofs; run-all.sh does everything
 docs/         UPGRADE.md / ROLLBACK.md  the two operator guides (+ .de.md)
               RISKS.md                  every known failure mode, with causes
               TESTPLAN.md               the ordered bring-up checks
-              ARCHITECTURE.md, MAINTENANCE.md, PRINTER-600.md
+              ARCHITECTURE.md, MAINTENANCE.md, PRINTER-600.md, BED-ZONES.md
 ```
+
+`machine/bed-zones.cfg` is the only thing there today: the four-zone bed, with a
+variant that heats **only the zones the print sits on** instead of the whole
+plate. It replaces the macro that mirrors the bed temperature onto all four
+heaters, keeps that behaviour as its default mode, and is switched with
+`BED_ZONES_MODE MODE=AUTO`. Read [`docs/BED-ZONES.md`](docs/BED-ZONES.md) before
+enabling it — the zone-to-heater mapping is an assumption until you have checked
+it on the machine, and a partly heated plate is not the same thermal state as an
+evenly heated one.
 
 ## Licence
 
