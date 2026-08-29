@@ -506,3 +506,51 @@ help on the run that matters, though — `ratos-update.sh` invokes
 `klipper-fork-migration.sh` before the configurator's symlink sweep, so a
 machine that lost its exclude file aborts in the migration before anything can
 repair it. Hence the guard in the migration script rather than reliance on this.
+
+---
+
+## 13. The VAOC light guard assumes a neopixel
+
+`_LED_VAOC_ON` and `_LED_VAOC_OFF` are the only two macros in
+`configuration/macros/led_control.cfg` that drive a fixture directly instead of
+going through `_LED_SET`, and upstream guards both on
+`printer['neopixel vaoc_led']` (`:106` and `:112`).
+
+`configuration/extras/ratrig-vaoc.cfg:39` does emit `[neopixel vaoc_led]`, so
+the guard holds for the stock Rat Rig VAOC camera module. It does not hold for a
+plain single-colour lamp wired to the VAOC LED pin and declared as Klipper's PWM
+LED section:
+
+```ini
+[led vaoc_led]
+white_pin: PA1
+```
+
+`[led ...]` is `PrinterPWMLED` and registers its printer object under
+`led vaoc_led`; `[neopixel ...]` registers under `neopixel vaoc_led`. The guard
+is therefore permanently false, both macros run to completion doing nothing, and
+the light never comes on.
+
+The failure mode is the awkward part: there is no error anywhere. Klipper
+starts, VAOC runs, the macros are called and return cleanly. Nothing in
+`klippy.log` says the light was skipped. It affects all three call sites at
+once — `macros/idex/vaoc.cfg:177` (VAOC start), `:300` (VAOC end) and `:1085`
+(`_VAOC_SWITCH_LED`, the toggle in the UI).
+
+### What the fork does about it
+
+`t_led_vaoc_pwm` adds an `elif printer['led vaoc_led'] is defined` branch to
+both macros. The neopixel branch is left byte-for-byte as upstream wrote it, so
+a stock VAOC module sees no behaviour change at all.
+
+The PWM branch sets all four channels. `PrinterPWMLED.__init__` builds
+`self.pins` only from the `*_pin` options actually present (the
+`("red", "green", "blue", "white")` loop in `klippy/extras/led.py`), and
+`update_leds` only touches those, so the unused values are discarded. One
+command therefore covers a white-only lamp and an RGB one without the macro
+having to know which is wired.
+
+This goes in a shipped `configuration/` file rather than the generator, for the
+same reason as §3: files under `configuration/` reach a printer by git pull,
+while anything the generator emits reaches it only on a regeneration — which,
+per §7, destroys this machine's config.

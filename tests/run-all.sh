@@ -123,6 +123,7 @@ for repo_path in "$KALICO:scripts/klippy-requirements.txt:numpy>=1.26.4,<2" \
 	"$CONF:configuration/scripts/klipper-fork-migration.sh:for _ratos_kalico_owned in gcode_shell_command.py belay.py; do" \
 	"$CONF:src/server/helpers/klipper-config.ts:section.push(\`rref: 12000\`)" \
 	"$CONF:configuration/z-probe/beacon.cfg:homing_retract_dist: 1" \
+	"$CONF:configuration/macros/led_control.cfg:{% elif printer['led vaoc_led'] is defined %}" \
 	"$CONF:src/scripts/check-version.py:from klippy import reactor, serialhdl, clocksync, mcu"; do
 	repo="${repo_path%%:*}"; rest="${repo_path#*:}"
 	file="${rest%%:*}"; needle="${rest#*:}"

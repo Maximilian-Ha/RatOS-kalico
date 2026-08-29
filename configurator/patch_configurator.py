@@ -411,6 +411,96 @@ def t_beacon_homing_retract(text, cfg):
         "beacon.cfg: bound the Z homing retract",
     )
 
+
+def t_led_vaoc_pwm(text, cfg):
+    """Let the VAOC light work when it is a plain PWM LED, not a neopixel.
+
+    ``_LED_VAOC_ON`` and ``_LED_VAOC_OFF`` are the only two macros in
+    ``led_control.cfg`` that drive a fixture directly instead of going through
+    ``_LED_SET``, and both guard on ``printer['neopixel vaoc_led']``
+    (``led_control.cfg:106`` and ``:112``).
+
+    ``configuration/extras/ratrig-vaoc.cfg:39`` does emit ``[neopixel vaoc_led]``,
+    so the guard holds for the stock Rat Rig VAOC camera module. It does not
+    hold for anyone who wired a plain single-colour lamp to the VAOC LED pin and
+    declared it as Klipper's PWM LED section::
+
+        [led vaoc_led]
+        white_pin: <pin>
+
+    ``[led ...]`` is ``PrinterPWMLED`` and registers its printer object under
+    ``led vaoc_led``; ``[neopixel ...]`` registers under ``neopixel vaoc_led``.
+    The guard is therefore permanently false for the PWM case, both macros run
+    to completion doing nothing, and the light never comes on -- with no error
+    anywhere, which is what makes it hard to find. It affects all three call
+    sites at once: ``macros/idex/vaoc.cfg:177`` (VAOC start), ``:300`` (VAOC end)
+    and ``:1085`` (``_VAOC_SWITCH_LED``, the toggle in the UI).
+
+    The fix adds an ``elif`` branch rather than replacing the guard, so the
+    neopixel path is byte-for-byte what it was and a stock VAOC module sees no
+    behaviour change at all.
+
+    The PWM branch sets all four channels. ``PrinterPWMLED.__init__`` builds
+    ``self.pins`` only from the ``*_pin`` options actually present
+    (``klippy/extras/led.py``, the ``("red", "green", "blue", "white")`` loop),
+    and ``update_leds`` only touches those, so the unused values are discarded.
+    One command therefore covers a white-only lamp and an RGB one without
+    having to know which is wired.
+
+    This goes in a SHIPPED file rather than the generator, for the same reason
+    as ``t_beacon_homing_retract``: files under ``configuration/`` reach a
+    printer by git pull, while anything the generator emits reaches it only on a
+    regeneration, which destroys hand edits.
+    """
+    on_old = (
+        "[gcode_macro _LED_VAOC_ON]\n"
+        "gcode:\n"
+        "\t{% if printer['neopixel vaoc_led'] is defined %}\n"
+        "\t\tSET_LED LED=vaoc_led RED=1.0 GREEN=1.0 BLUE=1.0\n"
+        "\t{% endif %}\n"
+    )
+    on_new = (
+        "# " + MARKER + ": a VAOC light wired as a plain PWM lamp is\n"
+        "# [led vaoc_led], not [neopixel vaoc_led], so upstream's guard alone\n"
+        "# never matches it and the light stays dark with no error anywhere.\n"
+        "# The elif sets all four channels because PrinterPWMLED keeps only the\n"
+        "# ones whose *_pin option exists, so one command covers a white-only\n"
+        "# lamp and an RGB one. See docs/RISKS.md.\n"
+        "[gcode_macro _LED_VAOC_ON]\n"
+        "gcode:\n"
+        "\t{% if printer['neopixel vaoc_led'] is defined %}\n"
+        "\t\tSET_LED LED=vaoc_led RED=1.0 GREEN=1.0 BLUE=1.0\n"
+        "\t{% elif printer['led vaoc_led'] is defined %}\n"
+        "\t\tSET_LED LED=vaoc_led RED=1.0 GREEN=1.0 BLUE=1.0 WHITE=1.0\n"
+        "\t{% endif %}\n"
+    )
+    off_old = (
+        "[gcode_macro _LED_VAOC_OFF]\n"
+        "gcode:\n"
+        "\t{% if printer['neopixel vaoc_led'] is defined %}\n"
+        "\t\tSET_LED LED=vaoc_led RED=0.0 GREEN=0.0 BLUE=0.0\n"
+        "\t{% endif %}\n"
+    )
+    off_new = (
+        "# " + MARKER + ": see _LED_VAOC_ON above.\n"
+        "[gcode_macro _LED_VAOC_OFF]\n"
+        "gcode:\n"
+        "\t{% if printer['neopixel vaoc_led'] is defined %}\n"
+        "\t\tSET_LED LED=vaoc_led RED=0.0 GREEN=0.0 BLUE=0.0\n"
+        "\t{% elif printer['led vaoc_led'] is defined %}\n"
+        "\t\tSET_LED LED=vaoc_led RED=0.0 GREEN=0.0 BLUE=0.0 WHITE=0.0\n"
+        "\t{% endif %}\n"
+    )
+    text = sub_once(
+        text, on_old, on_new,
+        "led_control.cfg: _LED_VAOC_ON also drives a PWM [led]",
+    )
+    return sub_once(
+        text, off_old, off_new,
+        "led_control.cfg: _LED_VAOC_OFF also drives a PWM [led]",
+    )
+
+
 def t_check_version_package_import(text, cfg):
     """Import klippy's modules through the package, because Kalico has one.
 
@@ -844,6 +934,7 @@ FILE_TRANSFORMS = [
     ("configuration/klippy/requirements.txt", [t_klippy_requirements]),
     ("src/server/helpers/klipper-config.ts", [t_tmc2240_rref]),
     ("configuration/z-probe/beacon.cfg", [t_beacon_homing_retract]),
+    ("configuration/macros/led_control.cfg", [t_led_vaoc_pwm]),
     ("src/scripts/check-version.py", [t_check_version_package_import]),
 ]
 
