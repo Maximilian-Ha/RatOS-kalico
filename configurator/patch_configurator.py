@@ -1019,10 +1019,10 @@ def printer_600_plan(checkout, cfg):
     The definition reuses the stock ``v-core-4-1-idex.ts`` template, so no new
     template has to be bundled -- only printer definitions are read at runtime.
 
-    ``maintenance.cfg`` rides along in the same directory. It is not included by
-    anything -- the operator adds one ``[include]`` line to printer.cfg -- but
-    shipping it here means it follows configurator updates instead of living as
-    a copy-paste block that nothing tracks.
+    ``maintenance.cfg`` rides along in the same directory. Its service macros
+    are not included by anything -- the operator adds one ``[include]`` line to
+    printer.cfg -- but shipping them here means they follow configurator updates
+    instead of living as a copy-paste block that nothing tracks.
 
     Returns (text_writes, binary_copies).
     """

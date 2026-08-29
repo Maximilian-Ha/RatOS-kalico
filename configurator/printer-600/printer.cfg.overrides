@@ -52,14 +52,22 @@ safe_distance: 60
 #variable_parking_position: 672
 
 #------------------------------------------------------------------------------------------------------------
-# 5) MAINTENANCE_MODE (optional, not an override)
+# 5) Service macros (optional, not overrides)
 #
-# maintenance.cfg, next to this file, defines a MAINTENANCE_MODE macro that
-# Mainsail lists as a button: bed to mid height (Z327.5), gantry to the front
-# (Y4), both toolheads centred on the bed (T0 at X265, T1 at X335 -- they
-# straddle the centre line because safe_distance is 60mm).
+# maintenance.cfg, next to this file, defines four macros Mainsail lists as
+# buttons:
 #
-# It is not included by anything. Add this line to printer.cfg, below
+#   MAINTENANCE_MODE   bed to mid height (Z327.5), gantry to the front (Y4),
+#                      both toolheads centred (T0 X265 / T1 X335 -- they
+#                      straddle the centre line because safe_distance is 60mm)
+#   MAINTENANCE_END    G28, bed to Z20, gantry to the back (Y585), both
+#                      toolheads parked. Refuses to re-home above 60C: a hot
+#                      nozzle oozes into the Z reference G28 takes above the bed
+#   NOZZLE_CHANGE      presents one nozzle 200mm in from its parking position
+#                      (T0 X127 / T1 X473) at 300C, with a 15 minute timeout
+#   NOZZLE_CHANGE_END  heater off, timeout cancelled
+#
+# They are not included by anything. Add this line to printer.cfg, below
 # [include RatOS.cfg]:
 #
 #     [include RatOS/printers/v-core-4-1-idex-600/maintenance.cfg]
