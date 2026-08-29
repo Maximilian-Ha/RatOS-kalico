@@ -42,6 +42,7 @@ the value running on the machine today.
 | `.../v-core-4-1-idex-600/v-core-4-idex.png` | The configurator expects the image next to the definition. Copied from the stock printer at build time. |
 | `configuration/printers/v-core-4-1-idex/600.cfg` | **The stock folder, not the new one.** The shared template hardcodes `[include RatOS/printers/v-core-4-1-idex/${size}.cfg]`. |
 | `.../v-core-4-1-idex-600/printer.cfg.overrides` | Documentation that ships to the printer, next to the definition. |
+| `.../v-core-4-1-idex-600/maintenance.cfg` | Optional service macros the operator includes from `printer.cfg`. Shipped rather than pasted so they follow updates. |
 
 The definition points `"template"` at the stock `v-core-4-1-idex.ts`, so no new
 template has to be bundled — only definitions are read at runtime.
@@ -69,6 +70,85 @@ short:
 
 Optionally `[gcode_macro T1] variable_parking_position: 672` — the configurator
 computes 673, one millimetre further out than what runs today.
+
+## The service macros
+
+`maintenance.cfg` ships alongside the definition and defines four macros
+Mainsail lists as buttons.
+
+### MAINTENANCE_MODE — into the service position
+
+| Step | Where | Why that value |
+|---|---|---|
+| bed to mid height | `Z327.5` | half of the 655 mm Z travel. Moved **first**: Z only ever increases the gap between nozzles and bed, so every later move starts with clearance. |
+| gantry to the front | `Y4` | `axis_minimum.y` is −1, plus a 5 mm margin off the limit. |
+| toolheads centred | T0 `X265`, T1 `X335` | both cannot sit on the bed centre at X300 — `safe_distance` is 60 mm — so they straddle it, 70 mm apart. |
+
+It homes what is unhomed (`MAYBE_HOME`), refuses to run while a print is
+printing or paused, and drops out of copy/mirror mode first, because the
+carriages move as a pair in those and `PARK_TOOLHEAD` is a no-op.
+
+### MAINTENANCE_END — back out of it
+
+`G28` (not `MAYBE_HOME`: hands were on the machine, so the kinematic position
+is fiction), bed to `Z20`, gantry to the back at `Y585`, both toolheads back on
+their parking positions.
+
+It **refuses to re-home while a hotend is above 60 °C**. `G28 Z` takes its
+reference with the nozzle right above the bed, and a hot nozzle oozes into
+exactly that — the drop lands in the Z reference and on the bed.
+`TEMP_LIMIT=` overrides it for one call when you know the nozzle is clean.
+
+### NOZZLE_CHANGE — present a nozzle, hot
+
+Bed and gantry as in the service position, then the chosen carriage comes
+**200 mm in from its own parking position** — T0 to `X127`, T1 to `X473` — while
+the other stays parked. Not the bed centre: 200 mm in is at the near corner of
+the frame, where a wrench fits. The nozzle is heated to **300 °C**.
+
+`T=` picks the toolhead (default: the active one), `TEMP=` and `DISTANCE=`
+override the rest. The machine homes **before** heating starts, for the same
+reason `MAINTENANCE_END` refuses to home hot. A loaded filament sensor produces
+a warning, not a refusal — a hot pull wants exactly that state.
+
+`NOZZLE_CHANGE_END` turns the heater off and cancels the timeout. If nobody
+does, a `delayed_gcode` turns it off after 15 minutes: Klipper's own
+`idle_timeout` is two hours in RatOS, far too long to leave 300 °C unattended
+because someone walked away mid-change.
+
+### What the two helpers are for
+
+`_MAINTENANCE_APPROACH` (bed, then gantry) and
+`_MAINTENANCE_POSITION_TOOLHEADS` (both carriages to X0/X1) are shared by all
+of the above, so the geometry is written once. The second one parks both
+carriages at −73/673 before moving them to their targets: going straight there
+from wherever they happen to be can put them closer than `safe_distance`
+mid-move, which Klipper aborts; from the parking positions the inward moves
+cannot.
+
+It is also why the copy/mirror reset lives in that helper rather than inline. A
+macro body is rendered in full before its first line executes, and RatOS' `G28`
+resets the IDEX mode itself and restores copy or mirror on the way out — so a
+mode read inline would be the pre-homing one.
+
+### Installing it
+
+The file is **not** included by anything. Add
+
+```
+[include RatOS/printers/v-core-4-1-idex-600/maintenance.cfg]
+```
+
+to `printer.cfg` below `[include RatOS.cfg]` — or, on a machine still running
+the hand-patched 500 config, paste the file's contents into `printer.cfg`, since
+that directory does not exist there yet.
+
+`tests/test_maintenance_macro.py` renders every macro with a stand-in for the
+600's printer object and checks the coordinates above, the move order, the
+`safe_distance` floor, the clamping, the temperature gate and the timeout. A
+gcode_macro is a Jinja template Klippy renders in full before its first line
+executes, so a typo in it is a startup error on the printer — this is the only
+place that can catch it off-machine.
 
 ## When to switch the machine over
 
