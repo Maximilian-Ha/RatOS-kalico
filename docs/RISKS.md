@@ -554,3 +554,105 @@ This goes in a shipped `configuration/` file rather than the generator, for the
 same reason as §3: files under `configuration/` reach a printer by git pull,
 while anything the generator emits reaches it only on a regeneration — which,
 per §7, destroys this machine's config.
+
+---
+
+## 14. The adaptive heat soak runs blind for up to 90 minutes
+
+Not a risk to the machine — a hole in what the operator can see, which on a
+soak that long is its own kind of problem.
+
+`BEACON_WAIT_FOR_PRINTER_HEAT_SOAK` (`configuration/klippy/beacon_adaptive_heat_soak.py`)
+holds the G-code queue until the frame stops moving, up to
+`variable_beacon_adaptive_heat_soak_max_wait`, which RatOS defaults to 5400
+seconds. On this printer a real soak runs 30–60 minutes. In that whole window
+upstream says exactly two things on the console:
+
+```
+Adaptive heat soak started, waiting for printer to reach thermal stability
+to suit layer quality 3 (normal) with maximum first layer duration of 30m.
+Check printer status for progress. Please wait...
+...
+Adaptive heat soak completed in 41m 12s.
+```
+
+Everything that would answer "is this converging, or is it stuck?" — elapsed
+time, progress, the Z-rate moving average, the threshold it has to fall under
+and how long it has held there — *is* computed, once per second, and then goes
+only to `klippy.log` via `logging.info`, throttled to every twentieth Z-rate.
+The Mainsail status line does carry a spinner and a percentage
+(`BackgroundDisplayStatusProgressHandler`), but that is one number with no
+history: it cannot be scrolled back, and it says nothing about how far the
+Z-rate still is from the threshold.
+
+### Why a macro cannot fix this
+
+The obvious workaround — a `delayed_gcode` printing every five minutes
+alongside the soak — does not work, and it is worth writing down why so nobody
+spends an evening on it. The wait runs *inside* a G-code command, and
+`GCodeDispatch.run_script` holds the G-code mutex for its whole duration. A
+`delayed_gcode` timer fires on schedule but then blocks on that mutex until the
+soak is over, and its lines all arrive in a burst at the end, when they are
+worth nothing.
+
+The progress spinner escapes that only because it never touches G-code: it
+writes `display_status` directly from a reactor timer, in Python. So the report
+has to come from inside the wait loop, which means from the module.
+
+### What the fork does about it
+
+`t_beacon_heat_soak_console_report` adds one `gcmd.respond_info` per interval to
+the wait loop, off values the loop already has:
+
+```
+// Heat soak: 5m elapsed, still collecting the first Z-rate average
+   (takes about 4m), target <= 24.83 nm/s.
+// Heat soak: 10m elapsed, 38.4%, Z-rate 61.27 nm/s, target <= 24.83 nm/s, steady 0/150.
+// Heat soak: 15m elapsed, 61.4%, Z-rate 41.87 nm/s, target <= 24.83 nm/s, steady 0/150.
+```
+
+`steady n/150` is the consecutive-sample hold count the module already uses to
+decide the soak is done, so the last line before completion reads `steady
+149/150`. `Z-rate` is the moving average in nanometres per second — the rate at
+which the beacon still sees the gantry moving relative to the bed.
+
+The cadence is `console_report_interval`, in seconds, on the
+`[beacon_adaptive_heat_soak]` section; the default is 300, one line every five
+minutes, about a dozen lines on a typical soak. `0` disables it. Per call,
+`REPORT_INTERVAL=` overrides it. To change it on this printer, put the section
+in `printer.cfg` **after** the RatOS includes:
+
+```ini
+[beacon_adaptive_heat_soak]
+console_report_interval: 120
+```
+
+Two things this deliberately does not do. It does not touch the soak's decision
+path — no threshold, no hold count, no trend check, no timing changes, so a
+soak takes exactly as long as it did before. And it does not report per Z-rate:
+the loop iterates about once a second, and that cadence already exists as the
+developer-only `_BEACON_WAIT_FOR_PRINTER_HEAT_SOAK_CAPTURE_Z_RATES`, which
+writes a CSV rather than flooding the console.
+
+`tests/test_heat_soak_report.py` checks the shape of the result rather than its
+text: that the report is a statement of the wait loop rather than nested inside
+`if z_rate_ra.is_full():` (one level deeper and it goes silent for exactly the
+first few minutes, when there is nothing else to look at), that both phases
+respond, that it re-arms its own clock, and that every name it reads is bound
+on the path that reads it — an `UnboundLocalError` here would surface five
+minutes into a print, not at boot. `tests/run-all.sh` runs it against the
+patched module and, as a control, against pristine upstream, which must fail
+it.
+
+### What is available without any of this
+
+Both predate the fork and are still the better tool for a post-mortem:
+
+```bash
+tail -f ~/printer_data/logs/klippy.log | grep beacon_adaptive_heat_soak
+```
+
+gives the same numbers every ~20 seconds, plus the level-2 moving average and
+the trend-check results. And the module writes every Z-rate sample of the run to
+`/tmp/heat_soak_<timestamp>.csv` (`time,z_rate,z`, one row per second), which
+survives until the next reboot and plots directly.
