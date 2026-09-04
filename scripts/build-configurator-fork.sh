@@ -10,6 +10,13 @@
 # Usage:
 #   scripts/build-configurator-fork.sh [--push] [--kalico-commit SHA]
 #                                      [--base <commit-ish>] [--no-sweeping-period]
+#                                      [--changelog-since <commit-ish>]
+#
+# --changelog-since overrides where the printer-facing changelog starts. The
+# range normally comes from the RatOS-Kalico-Definition trailer of the last
+# published build; pass this when that trailer is missing (the first build
+# after changelogs were introduced) or wrong, and the bullets are the
+# RatOS-kalico commits from there to HEAD instead.
 #
 # NOTE: this produces the SOURCE branch. Moonraker pulls the DEPLOYMENT branch,
 # which carries a built Next.js app -- see docs/MAINTENANCE.md, "The deployment
@@ -22,6 +29,7 @@ source "$SCRIPT_DIR/lib.sh"
 PUSH=0
 BASE=""
 KALICO_COMMIT=""
+CHANGELOG_SINCE=""
 EXTRA_ARGS=()
 
 while [ $# -gt 0 ]; do
@@ -36,6 +44,11 @@ while [ $# -gt 0 ]; do
 		shift
 		BASE="${1:-}"
 		[ -n "$BASE" ] || die "--base needs a commit-ish"
+		;;
+	--changelog-since)
+		shift
+		CHANGELOG_SINCE="${1:-}"
+		[ -n "$CHANGELOG_SINCE" ] || die "--changelog-since needs a commit-ish"
 		;;
 	--no-sweeping-period) EXTRA_ARGS+=(--no-sweeping-period) ;;
 	-h | --help)
@@ -192,6 +205,12 @@ PREV_DEFINITION="$(printf '%s\n' "$PREV_MESSAGE" |
 	sed -n 's/^RatOS-Kalico-Definition: \([0-9a-f]\{40\}\)$/\1/p' | head -1)"
 PREV_KALICO="$(printf '%s\n' "$PREV_MESSAGE" |
 	sed -n 's/^Klipper pinned to \([0-9a-f]\{40\}\).*$/\1/p' | head -1)"
+
+if [ -n "$CHANGELOG_SINCE" ]; then
+	PREV_DEFINITION="$(git -C "$REPO_ROOT" rev-parse --verify "${CHANGELOG_SINCE}^{commit}" 2>/dev/null)" ||
+		die "--changelog-since '$CHANGELOG_SINCE' is not a commit in this repository"
+	note "changelog starts at $CHANGELOG_SINCE (${PREV_DEFINITION:0:12}), overriding the trailer"
+fi
 
 # Every bullet stays on ONE line. The subject is derived from the first one,
 # and a wrapped bullet would truncate it mid-sentence -- which is exactly the
