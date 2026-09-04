@@ -121,7 +121,8 @@ bash -n "$CHECKOUT/configuration/scripts/ratos-common.sh" ||
 PYTHONPYCACHEPREFIX="$WORK_DIR/pycache" python3 -m py_compile \
 	"$CHECKOUT/configuration/klippy/kinematics/ratos_hybrid_corexy.py" \
 	"$CHECKOUT/configuration/klippy/ratos_homing.py" \
-	"$CHECKOUT/configuration/klippy/resonance_generator.py" ||
+	"$CHECKOUT/configuration/klippy/resonance_generator.py" \
+	"$CHECKOUT/configuration/klippy/beacon_adaptive_heat_soak.py" ||
 	die "patched klippy modules do not compile"
 # py_compile cannot see a name that is read but never bound -- exactly the
 # shape of bug a re-shaped assignment leaves behind, and on a printer Klippy
@@ -129,8 +130,15 @@ PYTHONPYCACHEPREFIX="$WORK_DIR/pycache" python3 -m py_compile \
 python3 "$REPO_ROOT/tests/check_undefined_names.py" \
 	"$CHECKOUT/configuration/klippy/kinematics/ratos_hybrid_corexy.py" \
 	"$CHECKOUT/configuration/klippy/ratos_homing.py" \
-	"$CHECKOUT/configuration/klippy/resonance_generator.py" ||
+	"$CHECKOUT/configuration/klippy/resonance_generator.py" \
+	"$CHECKOUT/configuration/klippy/beacon_adaptive_heat_soak.py" ||
 	die "a patched klippy module reads a name nothing binds"
+# The heat soak blocks the G-code queue for up to 90 minutes; the report is the
+# only thing that says whether it is converging. Its failure mode is silence,
+# so check it structurally rather than trusting that the file compiles.
+python3 "$REPO_ROOT/tests/test_heat_soak_report.py" \
+	"$CHECKOUT/configuration/klippy/beacon_adaptive_heat_soak.py" ||
+	die "the patched heat soak does not report progress to the console"
 
 # The migration script re-reads this value with an awk parser that demands
 # exactly 40 hex characters and, thanks to an ERR-trap interaction, reports a

@@ -80,6 +80,26 @@ else
 	printf 'ok: unpatched kinematics fails as expected\n'
 fi
 
+# --- 3b. heat soak: the operator can see it working ------------------------
+
+SOAK="$CONF/configuration/klippy/beacon_adaptive_heat_soak.py"
+run "patched heat soak reports to the console" \
+	python3 "$SCRIPT_DIR/test_heat_soak_report.py" "$SOAK"
+
+# And the same control as above: upstream must NOT pass, or the test has
+# stopped measuring the transform.
+PRISTINE_SOAK="$WORK_DIR/beacon_adaptive_heat_soak.pristine.py"
+git -C "$CONF" show "HEAD~1:configuration/klippy/beacon_adaptive_heat_soak.py" \
+	>"$PRISTINE_SOAK"
+printf '\n--- control: pristine heat soak must NOT report ---\n'
+if python3 "$SCRIPT_DIR/test_heat_soak_report.py" "$PRISTINE_SOAK" >/dev/null 2>&1; then
+	printf '!!! FAILED: unpatched RatOS heat soak passed the console report test.\n'
+	printf '    The test is no longer measuring anything -- fix it before trusting this run.\n'
+	FAILED=1
+else
+	printf 'ok: unpatched heat soak fails as expected\n'
+fi
+
 # --- 4. everything still parses --------------------------------------------
 
 printf '\n--- syntax ---\n'
@@ -92,6 +112,7 @@ for f in \
 	"$CONF/configuration/klippy/kinematics/ratos_hybrid_corexy.py" \
 	"$CONF/configuration/klippy/ratos_homing.py" \
 	"$CONF/configuration/klippy/resonance_generator.py" \
+	"$CONF/configuration/klippy/beacon_adaptive_heat_soak.py" \
 	"$KALICO/klippy/extras/bed_mesh.py" \
 	"$KALICO/klippy/extras/gcode_macro.py"; do
 	python3 -m py_compile "$f" && printf 'ok: %s\n' "$(basename "$f")" || FAILED=1
@@ -101,7 +122,8 @@ printf '\n--- unbound names ---\n'
 python3 "$SCRIPT_DIR/check_undefined_names.py" \
 	"$CONF/configuration/klippy/kinematics/ratos_hybrid_corexy.py" \
 	"$CONF/configuration/klippy/ratos_homing.py" \
-	"$CONF/configuration/klippy/resonance_generator.py" ||
+	"$CONF/configuration/klippy/resonance_generator.py" \
+	"$CONF/configuration/klippy/beacon_adaptive_heat_soak.py" ||
 	FAILED=1
 
 printf '\n--- extras collisions ---\n'
@@ -124,6 +146,7 @@ for repo_path in "$KALICO:scripts/klippy-requirements.txt:numpy>=1.26.4,<2" \
 	"$CONF:src/server/helpers/klipper-config.ts:section.push(\`rref: 12000\`)" \
 	"$CONF:configuration/z-probe/beacon.cfg:homing_retract_dist: 1" \
 	"$CONF:configuration/macros/led_control.cfg:{% elif printer['led vaoc_led'] is defined %}" \
+	"$CONF:configuration/klippy/beacon_adaptive_heat_soak.py:console_report_interval = gcmd.get_int('REPORT_INTERVAL'" \
 	"$CONF:src/scripts/check-version.py:from klippy import reactor, serialhdl, clocksync, mcu"; do
 	repo="${repo_path%%:*}"; rest="${repo_path#*:}"
 	file="${rest%%:*}"; needle="${rest#*:}"
