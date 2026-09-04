@@ -166,6 +166,54 @@ one traverse per station and buys not having to know where the carriages were �
 moving a pair to new positions in the wrong order trips `safe_distance`. On the
 sweeps that traverse is not even waste; it spreads grease.
 
+### LUBE_STATUS / LUBE_MARK — the lubrication record
+
+`LUBE_STATUS` answers "when did I last grease this, and how much has been
+printed since":
+
+```
+LUBE | Print hours on this machine: 412.3
+LUBE | X: greased at 375.0 h -- 37.3 print hours ago (62.7 h to go)
+LUBE | Y: never greased, or the record was lost. LUBE_Y runs it, LUBE_MARK AXIS=Y records one you did by hand.
+LUBE | Z: greased at 300.0 h -- 112.3 print hours ago (OVERDUE by 12.3 h)
+last greased x: 2026-09-04 15:12
+```
+
+A finished `LUBE_X/Y/Z` run records itself. `LUBE_MARK AXIS=X|Y|Z|ALL` records
+a greasing done by hand.
+
+**The unit is print hours, not calendar time.** A machine that stood still for a
+month has not worn its rails. `variable_interval_hours` (default 100) is what
+"overdue" is measured against — it is a placeholder, not a specification. Set it
+to what your rails and your grease actually want.
+
+**Klipper has no clock, and no lifetime print counter.** A macro's whole world
+is `printer`, the `action_*` helpers and `math`; `print_stats` counts only the
+job in progress. So:
+
+| What | How |
+|---|---|
+| print hours | a `delayed_gcode` samples `print_stats.print_duration` every 60 s and accumulates the deltas. A sample *below* the last one means the next job started, not time running backwards. |
+| persistence | `SAVE_VARIABLE`, into the same `[save_variables]` file RatOS keeps filament state in. Writes are batched — once 6 minutes of print time have piled up, or when printing stops — because each write rewrites the whole file. |
+| the calendar date | two `[gcode_shell_command]` sections. One writes `date` into a stamp file when an axis is recorded, the other prints the stamps into the console. The date is **displayed, never computed with**: a shell command's output goes to the console and nowhere a macro can reach. |
+
+The sampling loop does **not** keep the machine awake. Klipper's `idle_timeout`
+measures idleness at the toolhead's move queue (`est_print_time - print_time`),
+not "some command ran", and nothing in the loop queues a move — so the two-hour
+heater timeout still fires.
+
+**The counter starts at zero when you install this.** It is print hours *since
+the record existed*, not the machine's life. If you want it to match reality,
+read the machine's total print time off Moonraker's history page and seed it
+once:
+
+```
+SAVE_VARIABLE VARIABLE=lube_print_hours VALUE=812.5
+```
+
+Set `variable_show_dates: False` on `LUBE_STATUS` if you drop the two shell
+command sections; everything else keeps working without them.
+
 ### What the two helpers are for
 
 `_MAINTENANCE_APPROACH` (bed, then gantry) and

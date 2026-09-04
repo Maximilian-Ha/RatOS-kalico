@@ -74,15 +74,21 @@ LUBE_STATIONS = {
 for _stations in LUBE_STATIONS.values():
     _stations[1] = (_stations[0] + _stations[2]) / 2
 
+# The lubrication record counts PRINT hours, not calendar time.
+LUBE_SAVE_AFTER = 360      # seconds of print time that pile up before a disk write
+LUBE_SAMPLE_INTERVAL = 60  # seconds between samples
+
 PUBLIC_MACROS = {
     "MAINTENANCE_MODE", "MAINTENANCE_END", "NOZZLE_CHANGE", "NOZZLE_CHANGE_END",
     "LUBE_X", "LUBE_Y", "LUBE_Z", "LUBE_NEXT", "LUBE_ABORT",
+    "LUBE_STATUS", "LUBE_MARK",
 }
 INTERNAL_MACROS = {
     "_MAINTENANCE_APPROACH", "_MAINTENANCE_POSITION_TOOLHEADS",
     "_NOZZLE_CHANGE_TIMEOUT",
     "_LUBE_START", "_LUBE_ADVANCE", "_LUBE_FINISH", "_LUBE_MOVE",
     "_LUBE_CLEAR", "_LUBE_PROMPT",
+    "_LUBE_RECORD", "_LUBE_HOURS", "_LUBE_HOURS_TICK",
 }
 
 
@@ -92,7 +98,9 @@ class MacroError(Exception):
 
 def printer_state(idex_mode="INACTIVE", homed="xyz", printing="standby",
                   hotend_temp=25.0, nozzle_change_tool=-1, filament=None,
-                  lube_axis="", lube_stations=None, lube_travel=None):
+                  lube_axis="", lube_stations=None, lube_travel=None,
+                  saved=None, print_duration=0.0, unsaved=0.0,
+                  last_duration=0.0):
     """A stand-in for Klippy's `printer` object, with the 600's config.
 
     idex_mode is [dual_carriage].carriage_1 as Klippy reports it: INACTIVE when
@@ -108,7 +116,10 @@ def printer_state(idex_mode="INACTIVE", homed="xyz", printing="standby",
             "max_accel": 8000,
         },
         "dual_carriage": {"carriage_0": "PRIMARY", "carriage_1": idex_mode},
-        "print_stats": {"state": printing},
+        "print_stats": {"state": printing, "print_duration": print_duration},
+        # What SAVE_VARIABLE persists across restarts. The configurator writes
+        # [save_variables] into printer.cfg, so this is always present.
+        "save_variables": {"variables": dict(saved or {})},
         "extruder": {"temperature": hotend_temp, "target": 0.0},
         "extruder1": {"temperature": hotend_temp, "target": 0.0},
         "configfile": {
@@ -137,6 +148,13 @@ def printer_state(idex_mode="INACTIVE", homed="xyz", printing="standby",
         "gcode_macro MAINTENANCE_MODE": {
             "z_height": "auto", "y_position": "auto", "front_margin": 5,
         },
+        "gcode_macro _LUBE_HOURS": {
+            "last_duration": last_duration,
+            "unsaved": unsaved,
+            "interval": LUBE_SAMPLE_INTERVAL,
+            "save_after": LUBE_SAVE_AFTER,
+        },
+        "gcode_macro LUBE_STATUS": {"interval_hours": 100, "show_dates": True},
         # _LUBE_START carries the state of a lubrication run across the
         # separate commands that make one up.
         "gcode_macro _LUBE_START": {
@@ -261,6 +279,9 @@ def check(path):
     check_lube_move(macros, expect)
     check_lube_finish(macros, expect)
     check_lube_prompt(macros, expect)
+    check_lube_hours(macros, expect)
+    check_lube_record(macros, expect)
+    check_lube_status(macros, expect)
     return failures
 
 
@@ -664,6 +685,139 @@ def check_lube_prompt(macros, expect):
                    params={"AXIS": "Z", "STATION": "3", "TOTAL": "3", "POS": "645.0"})
     expect("bed at the bottom" in "\n".join(lines),
            "the last Z station is not described as the bed at the bottom")
+
+
+def variable_set(lines, name):
+    """The value a SET_GCODE_VARIABLE line assigns."""
+    line = lines[index_of(lines, r"VARIABLE=%s\b" % name)]
+    return float(re.search(r"VALUE=([-\d.]+)", line).group(1))
+
+
+def saved_value(lines, name):
+    """The value a SAVE_VARIABLE line writes."""
+    line = lines[index_of(lines, r"SAVE_VARIABLE VARIABLE=%s\b" % name)]
+    return float(re.search(r"VALUE=([-\d.]+)", line).group(1))
+
+
+def check_lube_hours(macros, expect):
+    """The print-hour counter: Klipper has no lifetime total, so we keep one."""
+    # Mid-print sample: the delta is counted, nothing is written to disk yet.
+    lines = render(macros, "_LUBE_HOURS", printer_state(printing="printing", print_duration=160.0),
+                   variables={"last_duration": 100.0, "unsaved": 0.0})
+    expect(abs(variable_set(lines, "last_duration") - 160.0) < 1e-6,
+           "the sample point did not move to the current print_duration")
+    expect(abs(variable_set(lines, "unsaved") - 60.0) < 1e-6,
+           "a 60s delta was not counted (%s)" % lines)
+    expect(not [l for l in lines if l.startswith("SAVE_VARIABLE")],
+           "every sample writes to disk -- that is a file rewrite a minute")
+
+    # print_duration resets when the next job starts. A smaller value is a new
+    # job, not time travelling backwards.
+    lines = render(macros, "_LUBE_HOURS", printer_state(printing="printing", print_duration=20.0),
+                   variables={"last_duration": 500.0, "unsaved": 0.0})
+    expect(abs(variable_set(lines, "unsaved") - 20.0) < 1e-6,
+           "a new job's first sample was counted wrong (%s)" % lines)
+
+    # Three reasons to actually write: asked to, printing stopped, enough piled up.
+    total = 10.0
+    for label, state, unsaved, params in (
+        ("FLUSH=1", "printing", 60.0, {"FLUSH": "1"}),
+        ("printing stopped", "complete", 60.0, {}),
+        ("batch full", "printing", LUBE_SAVE_AFTER, {}),
+    ):
+        lines = render(macros, "_LUBE_HOURS",
+                       printer_state(printing=state, print_duration=160.0,
+                                     saved={"lube_print_hours": total}),
+                       params=params, variables={"last_duration": 100.0, "unsaved": unsaved})
+        written = saved_value(lines, "lube_print_hours")
+        expected = total + (unsaved + 60.0) / 3600
+        expect(abs(written - expected) < 1e-3,
+               "%s wrote %s hours, expected %s" % (label, written, expected))
+        expect(abs(variable_set(lines, "unsaved")) < 1e-6,
+               "%s did not reset the unsaved counter" % label)
+
+    # Nothing to write, nothing written.
+    lines = render(macros, "_LUBE_HOURS", printer_state(printing="standby", print_duration=0.0),
+                   variables={"last_duration": 0.0, "unsaved": 0.0})
+    expect(not [l for l in lines if l.startswith("SAVE_VARIABLE")],
+           "an idle sample with nothing counted still wrote to disk")
+
+    # The tick has to re-arm itself or the counter stops after one sample.
+    lines = render(macros, "_LUBE_HOURS_TICK", printer_state())
+    expect("_LUBE_HOURS" in lines, "the tick does not sample")
+    rearm = lines[index_of(lines, r"^UPDATE_DELAYED_GCODE ID=_LUBE_HOURS_TICK")]
+    expect(abs(number_in(rearm, r"DURATION=([\d.]+)") - LUBE_SAMPLE_INTERVAL) < 1e-6,
+           "the tick re-arms at %r, expected every %ss" % (rearm, LUBE_SAMPLE_INTERVAL))
+
+
+def check_lube_record(macros, expect):
+    lines = render(macros, "_LUBE_RECORD",
+                   printer_state(saved={"lube_print_hours": 412.5}), params={"AXIS": "Z"})
+    expect(abs(saved_value(lines, "lube_z_at") - 412.5) < 1e-3,
+           "the greasing was recorded at the wrong hour count (%s)" % lines)
+    expect([l for l in lines if "RUN_SHELL_COMMAND CMD=lube_stamp" in l and "PARAMS=z" in l],
+           "no calendar date is stamped for the axis (%s)" % lines)
+
+    # Recording by hand, for a greasing done without the guided run.
+    lines = render(macros, "LUBE_MARK", printer_state(), params={"AXIS": "ALL"})
+    expect(index_of(lines, r"^_LUBE_HOURS FLUSH=1") < index_of(lines, r"^_LUBE_RECORD"),
+           "the counter is not flushed before the snapshot is taken, so the "
+           "snapshot lags the number LUBE_STATUS shows")
+    expect(len([l for l in lines if l.startswith("_LUBE_RECORD")]) == 3,
+           "AXIS=ALL did not record all three axes (%s)" % lines)
+    expect(refuses(macros, "LUBE_MARK", printer_state(), params={"AXIS": "Q"}),
+           "LUBE_MARK accepted AXIS=Q")
+    expect(refuses(macros, "LUBE_MARK", printer_state(), params={}),
+           "LUBE_MARK accepted a missing AXIS")
+
+    # A finished run records itself -- the whole point of the guided flow.
+    lines = render(macros, "_LUBE_FINISH",
+                   printer_state(lube_axis="Z", lube_travel=list(LUBE_STATIONS["Z"][::2])))
+    i_flush = index_of(lines, r"^_LUBE_HOURS FLUSH=1")
+    i_record = index_of(lines, r"^_LUBE_RECORD AXIS=Z")
+    expect(index_of(lines, r"^_LUBE_MOVE") < i_flush < i_record < index_of(lines, r"^_LUBE_CLEAR"),
+           "a finished run must record itself after the sweeps and before the "
+           "state is cleared (%s)" % lines)
+
+
+def check_lube_status(macros, expect):
+    # Greased once, printed since. The unsaved seconds count too, or the
+    # display lags reality by up to a batch.
+    saved = {"lube_print_hours": 400.0, "lube_z_at": 375.0}
+    lines = render(macros, "LUBE_STATUS", printer_state(saved=saved, unsaved=3600.0))
+    text = "\n".join(lines)
+    expect("401.0" in text, "the pending, unwritten hours are not counted in the "
+                            "total (%s)" % text)
+    expect("375.0" in text and "26.0" in text,
+           "Z should read as greased at 375.0h, 26.0 print hours ago (%s)" % text)
+    expect("to go" in text, "no interval verdict for an axis still inside it")
+
+    # Past the interval it has to say so, not quietly count on.
+    saved = {"lube_print_hours": 500.0, "lube_z_at": 375.0}
+    text = "\n".join(render(macros, "LUBE_STATUS", printer_state(saved=saved)))
+    expect("OVERDUE" in text, "125 print hours on a 100 hour interval is not "
+                              "flagged as overdue (%s)" % text)
+
+    # Never greased is a state of its own, not "0 hours ago".
+    text = "\n".join(render(macros, "LUBE_STATUS", printer_state(saved={"lube_print_hours": 40.0})))
+    expect(text.count("never greased") == 3,
+           "an axis with no record must say so for all three axes (%s)" % text)
+    expect("0.0 print hours ago" not in text,
+           "a missing record was rendered as a greasing at hour zero")
+
+    # An empty save file is the state a fresh printer is in.
+    text = "\n".join(render(macros, "LUBE_STATUS", printer_state()))
+    expect("Print hours on this machine: 0.0" in text,
+           "a printer with no saved variables does not start at zero (%s)" % text)
+
+    # The dates cannot come from a macro; they come back as shell output.
+    expect([l for l in render(macros, "LUBE_STATUS", printer_state())
+            if "RUN_SHELL_COMMAND CMD=lube_dates" in l],
+           "LUBE_STATUS does not ask for the calendar dates")
+    text = "\n".join(render(macros, "LUBE_STATUS", printer_state(),
+                            variables={"show_dates": False}))
+    expect("RUN_SHELL_COMMAND" not in text,
+           "show_dates=False still runs the shell command")
 
 
 def main(argv):

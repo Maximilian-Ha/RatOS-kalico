@@ -70,6 +70,11 @@ safe_distance: 60
 #                      at, then sweeps to spread it. Continue with the dialog's
 #                      button or by typing LUBE_NEXT; LUBE_ABORT drops the run.
 #                      Stations are derived from the axis limits, not hardcoded
+#   LUBE_STATUS        when each axis was last greased and how many PRINT hours
+#                      ago. The hours are counted by a delayed_gcode and kept in
+#                      save_variables; the calendar date comes from two shell
+#                      commands, because a macro cannot read a clock
+#   LUBE_MARK          records a greasing you did by hand (AXIS=X|Y|Z|ALL)
 #
 # They are not included by anything. Add this line to printer.cfg, below
 # [include RatOS.cfg]:
