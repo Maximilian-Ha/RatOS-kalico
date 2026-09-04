@@ -55,12 +55,34 @@ NOZZLE_X_T0 = PARK_T0 + NOZZLE_DISTANCE   # 127.0
 NOZZLE_X_T1 = PARK_T1 - NOZZLE_DISTANCE   # 473.0
 NOZZLE_TIMEOUT = 900
 
+# Lubrication: three stations per axis, derived from the limits with a margin.
+LUBE_MARGIN = 10.0
+LUBE_SWEEPS = 2
+LUBE_DELAY = 3
+LUBE_SPACING = SAFE_DISTANCE + 10          # the IDEX pair moves as a block
+LUBE_STATIONS = {
+    # Z is nozzle-to-bed distance: near = bed at the TOP. Measured from 0
+    # rather than axis_minimum (-5), which is probe territory.
+    "Z": [0.0 + LUBE_MARGIN, None, Z_MAX - LUBE_MARGIN],
+    # Y stops at the printable area, not the mechanical limit: the VAOC camera
+    # sits in the last stretch of travel.
+    "Y": [Y_MIN + LUBE_MARGIN, None, PRINTABLE_Y_MAX - LUBE_MARGIN],
+    # X stations are the LEFT carriage's position; the right one follows a
+    # spacing behind, so far is the right limit minus margin minus spacing.
+    "X": [-75.0 + LUBE_MARGIN, None, 675.0 - LUBE_MARGIN - LUBE_SPACING],
+}
+for _stations in LUBE_STATIONS.values():
+    _stations[1] = (_stations[0] + _stations[2]) / 2
+
 PUBLIC_MACROS = {
     "MAINTENANCE_MODE", "MAINTENANCE_END", "NOZZLE_CHANGE", "NOZZLE_CHANGE_END",
+    "LUBE_X", "LUBE_Y", "LUBE_Z", "LUBE_NEXT", "LUBE_ABORT",
 }
 INTERNAL_MACROS = {
     "_MAINTENANCE_APPROACH", "_MAINTENANCE_POSITION_TOOLHEADS",
     "_NOZZLE_CHANGE_TIMEOUT",
+    "_LUBE_START", "_LUBE_ADVANCE", "_LUBE_FINISH", "_LUBE_MOVE",
+    "_LUBE_CLEAR", "_LUBE_PROMPT",
 }
 
 
@@ -69,7 +91,8 @@ class MacroError(Exception):
 
 
 def printer_state(idex_mode="INACTIVE", homed="xyz", printing="standby",
-                  hotend_temp=25.0, nozzle_change_tool=-1, filament=None):
+                  hotend_temp=25.0, nozzle_change_tool=-1, filament=None,
+                  lube_axis="", lube_stations=None, lube_travel=None):
     """A stand-in for Klippy's `printer` object, with the 600's config.
 
     idex_mode is [dual_carriage].carriage_1 as Klippy reports it: INACTIVE when
@@ -114,6 +137,17 @@ def printer_state(idex_mode="INACTIVE", homed="xyz", printing="standby",
         "gcode_macro MAINTENANCE_MODE": {
             "z_height": "auto", "y_position": "auto", "front_margin": 5,
         },
+        # _LUBE_START carries the state of a lubrication run across the
+        # separate commands that make one up.
+        "gcode_macro _LUBE_START": {
+            "axis": lube_axis,
+            "stations": list(lube_stations if lube_stations is not None else []),
+            "travel": list(lube_travel if lube_travel is not None else []),
+            "total": 3,
+            "margin": LUBE_MARGIN,
+            "sweeps": LUBE_SWEEPS,
+            "move_delay": LUBE_DELAY,
+        },
     }
     for tool in filament or []:
         state["filament_switch_sensor toolhead_filament_sensor_t%d" % tool] = {
@@ -149,9 +183,14 @@ def load_macros(path):
     return macros
 
 
-def render(macros, name, printer, params=None):
-    """Render one macro, returning its emitted g-code lines."""
-    variables, template_text = macros[name]
+def render(macros, name, printer, params=None, variables=None):
+    """Render one macro, returning its emitted g-code lines.
+
+    `variables` overrides the macro's own variable_ defaults, the way
+    SET_GCODE_VARIABLE does at runtime.
+    """
+    macro_variables, template_text = macros[name]
+    variables = dict(macro_variables, **(variables or {}))
     env = jinja2.Environment("{%", "%}", "{", "}", extensions=["jinja2.ext.do"])
 
     def raise_error(msg):
@@ -182,10 +221,10 @@ def number_in(line, pattern):
     return float(re.search(pattern, line).group(1))
 
 
-def refuses(macros, name, printer, params=None):
+def refuses(macros, name, printer, params=None, variables=None):
     """True if the macro aborts with action_raise_error rather than emitting."""
     try:
-        render(macros, name, printer, params)
+        render(macros, name, printer, params, variables)
     except MacroError:
         return True
     return False
@@ -217,6 +256,11 @@ def check(path):
     check_maintenance_end(macros, expect)
     check_nozzle_change(macros, expect)
     check_nozzle_change_end(macros, expect)
+    check_lube_stations(macros, expect)
+    check_lube_advance(macros, expect)
+    check_lube_move(macros, expect)
+    check_lube_finish(macros, expect)
+    check_lube_prompt(macros, expect)
     return failures
 
 
@@ -452,6 +496,176 @@ def check_nozzle_change_end(macros, expect):
     expect("DURATION=0" in cancel, "the timeout is not cancelled (%s)" % cancel)
 
 
+def parse_list(line):
+    """The list literal out of a SET_GCODE_VARIABLE ... VALUE="[...]" line."""
+    return ast.literal_eval(re.search(r'VALUE="(\[[^"]*\])"', line).group(1))
+
+
+def check_lube_stations(macros, expect):
+    """Every station is derived from the axis limits, not from a 600 number."""
+    for axis, expected in sorted(LUBE_STATIONS.items()):
+        lines = render(macros, "_LUBE_START", printer_state(), params={"AXIS": axis})
+        text = "\n".join(lines)
+
+        i_home = index_of(lines, r"^MAYBE_HOME\b")
+        i_state = index_of(lines, r"VARIABLE=axis\b")
+        i_advance = index_of(lines, r"^_LUBE_ADVANCE\b")
+        expect(i_home < i_state < i_advance,
+               "%s: must home, then record the run, then move" % axis)
+
+        stations = parse_list(lines[index_of(lines, r"VARIABLE=stations")])
+        expect([round(v, 3) for v in stations] == [round(v, 3) for v in expected],
+               "LUBE_%s stops at %s, expected %s" % (axis, stations, expected))
+        travel = parse_list(lines[index_of(lines, r"VARIABLE=travel")])
+        expect([round(v, 3) for v in travel] == [round(expected[0], 3), round(expected[2], 3)],
+               "LUBE_%s sweeps over %s, expected the two ends %s"
+               % (axis, travel, [expected[0], expected[2]]))
+
+        # Whatever is not being greased gets out of the way first.
+        if axis == "Z":
+            expect(index_of(lines, r"^G0 Y") < i_advance,
+                   "Z: the gantry is not moved out of the way before the run")
+            expect("_MAINTENANCE_POSITION_TOOLHEADS" in text,
+                   "Z: the carriages are not parked before the run")
+        else:
+            expect("_MAINTENANCE_APPROACH" in text,
+                   "%s: the bed is not lowered for access before the run" % axis)
+        if axis == "X":
+            expect("_MAINTENANCE_POSITION_TOOLHEADS" not in text,
+                   "X: the carriages are parked in the preparation of a run "
+                   "whose stations move them anyway")
+
+    # Guards.
+    expect(refuses(macros, "_LUBE_START", printer_state(), params={"AXIS": "A"}),
+           "_LUBE_START accepted AXIS=A")
+    expect(refuses(macros, "_LUBE_START", printer_state(), params={}),
+           "_LUBE_START accepted a missing AXIS")
+    for state in ("printing", "paused"):
+        expect(refuses(macros, "_LUBE_START", printer_state(printing=state),
+                       params={"AXIS": "Z"}),
+               "a lubrication run started while %s" % state)
+    # A second run while one is open would overwrite the first one's state.
+    expect(refuses(macros, "_LUBE_START", printer_state(), params={"AXIS": "Y"},
+                   variables={"axis": "Z"}),
+           "_LUBE_START started a Y run on top of an open Z run")
+
+
+def check_lube_advance(macros, expect):
+    stations = LUBE_STATIONS["Z"]
+    lines = render(macros, "_LUBE_ADVANCE",
+                   printer_state(lube_axis="Z", lube_stations=stations))
+
+    # Warn, wait, then move: hands have to be able to come out.
+    i_warn = index_of(lines, r"^RATOS_ECHO.*Station 1 of 3")
+    i_dwell = index_of(lines, r"^G4 P")
+    i_move = index_of(lines, r"^_LUBE_MOVE\b")
+    expect(i_warn < i_dwell < i_move,
+           "the warning and the dwell must both come before the move")
+    dwell = number_in(lines[i_dwell], r"G4 P([\d.]+)")
+    expect(abs(dwell - LUBE_DELAY * 1000) < 1e-6,
+           "the dwell is %sms, expected %ss" % (dwell, LUBE_DELAY))
+
+    move = lines[i_move]
+    expect("AXIS=Z" in move and abs(number_in(move, r"POS=([-\d.]+)") - stations[0]) < 1e-6,
+           "the first station move is %r, expected Z to %s" % (move, stations[0]))
+
+    # The station just visited is consumed, so LUBE_NEXT cannot repeat it.
+    rest = parse_list(lines[index_of(lines, r"VARIABLE=stations")])
+    expect([round(v, 3) for v in rest] == [round(v, 3) for v in stations[1:]],
+           "after station 1 the remaining stations are %s, expected %s" % (rest, stations[1:]))
+    prompt = lines[index_of(lines, r"^_LUBE_PROMPT\b")]
+    expect("STATION=1" in prompt and "TOTAL=3" in prompt,
+           "the dialog is not told which station it is showing (%s)" % prompt)
+
+    # Mid-run and end-of-run.
+    lines = render(macros, "_LUBE_ADVANCE",
+                   printer_state(lube_axis="Z", lube_stations=stations[2:]))
+    expect([l for l in lines if "Station 3 of 3" in l],
+           "the last station is not numbered 3 of 3")
+    lines = render(macros, "_LUBE_ADVANCE",
+                   printer_state(lube_axis="Z", lube_stations=[]))
+    expect(lines == ["_LUBE_FINISH"],
+           "with no stations left the run must finish, got %s" % lines)
+    expect(refuses(macros, "_LUBE_ADVANCE", printer_state()),
+           "_LUBE_ADVANCE ran with no run in progress")
+
+    # LUBE_NEXT is what the dialog's Continue button sends.
+    lines = render(macros, "LUBE_NEXT", printer_state(lube_axis="Z", lube_stations=stations))
+    expect(lines == ["_LUBE_ADVANCE"], "LUBE_NEXT does not advance the run (%s)" % lines)
+    lines = render(macros, "LUBE_NEXT", printer_state())
+    expect(not [l for l in lines if l.startswith("_LUBE_ADVANCE")],
+           "LUBE_NEXT advanced a run that does not exist")
+
+    # Aborting forgets the run and takes the dialog down.
+    lines = render(macros, "LUBE_ABORT", printer_state(lube_axis="Z", lube_stations=stations))
+    expect("_LUBE_CLEAR" in lines, "LUBE_ABORT does not clear the run state")
+    expect([l for l in lines if "prompt_end" in l], "LUBE_ABORT leaves the dialog up")
+    cleared = render(macros, "_LUBE_CLEAR", printer_state(lube_axis="Z"))
+    expect([l for l in cleared if 'VARIABLE=axis VALUE="\'\'"' in l],
+           "_LUBE_CLEAR does not reset the axis (%s)" % cleared)
+
+
+def check_lube_move(macros, expect):
+    lines = render(macros, "_LUBE_MOVE", printer_state(), params={"AXIS": "Z", "POS": "645"})
+    expect(abs(number_in(lines[index_of(lines, r"^G0 Z")], r"G0 Z([-\d.]+)") - 645) < 1e-6,
+           "a Z move did not go to Z645 (%s)" % lines)
+    lines = render(macros, "_LUBE_MOVE", printer_state(), params={"AXIS": "Y", "POS": "590"})
+    expect(abs(number_in(lines[index_of(lines, r"^G0 Y")], r"G0 Y([-\d.]+)") - 590) < 1e-6,
+           "a Y move did not go to Y590 (%s)" % lines)
+
+    # X moves the pair, and the pair must stay a safe_distance apart at both
+    # ends of the travel -- including where clamping bites.
+    for pos in LUBE_STATIONS["X"]:
+        lines = render(macros, "_LUBE_MOVE", printer_state(),
+                       params={"AXIS": "X", "POS": str(pos)})
+        call = lines[index_of(lines, r"^_MAINTENANCE_POSITION_TOOLHEADS")]
+        x0 = number_in(call, r"X0=([-\d.]+)")
+        x1 = number_in(call, r"X1=([-\d.]+)")
+        expect(x1 - x0 >= SAFE_DISTANCE,
+               "at X station %s the carriages end %smm apart, below safe_distance"
+               % (pos, x1 - x0))
+        expect(-75.0 <= x0 <= 600.0 and 0.0 <= x1 <= 675.0,
+               "at X station %s a carriage is driven outside its limits (%s/%s)"
+               % (pos, x0, x1))
+
+
+def check_lube_finish(macros, expect):
+    near, _mid, far = LUBE_STATIONS["Z"]
+    lines = render(macros, "_LUBE_FINISH",
+                   printer_state(lube_axis="Z", lube_travel=[near, far]))
+    moves = [number_in(l, r"POS=([-\d.]+)") for l in lines if l.startswith("_LUBE_MOVE")]
+    expect(moves == [far, near] * LUBE_SWEEPS,
+           "the closing sweeps are %s, expected %s full passes ending at the "
+           "start (%s)" % (moves, LUBE_SWEEPS, [far, near] * LUBE_SWEEPS))
+    expect(index_of(lines, r"^G4 P") < index_of(lines, r"^_LUBE_MOVE"),
+           "the sweeps start without a warning dwell")
+    expect("_LUBE_CLEAR" in lines, "the run state survives the end of the run")
+    expect([l for l in lines if "prompt_end" in l], "the dialog is left up at the end")
+
+
+def check_lube_prompt(macros, expect):
+    lines = render(macros, "_LUBE_PROMPT", printer_state(),
+                   params={"AXIS": "Z", "STATION": "1", "TOTAL": "3", "POS": "10.0"})
+    text = "\n".join(lines)
+    for needed in ("action:prompt_begin", "action:prompt_text",
+                   "action:prompt_footer_button", "action:prompt_show"):
+        expect(needed in text, "the dialog is missing %s" % needed)
+    expect("Continue|LUBE_NEXT" in text,
+           "the dialog's Continue button does not send LUBE_NEXT")
+    expect("Abort|LUBE_ABORT" in text,
+           "the dialog has no way out that ends the run")
+    expect(index_of(lines, r"prompt_end") < index_of(lines, r"prompt_begin"),
+           "a previous dialog is not closed before the next one opens")
+    # Z is the axis whose direction is easy to get backwards, so the dialog
+    # says where the bed is, not just a number.
+    expect("bed at the top" in text,
+           "the Z dialog does not say where the bed physically is (%s)" % text)
+    lines = render(macros, "_LUBE_PROMPT", printer_state(),
+                   params={"AXIS": "Z", "STATION": "3", "TOTAL": "3", "POS": "645.0"})
+    expect("bed at the bottom" in "\n".join(lines),
+           "the last Z station is not described as the bed at the bottom")
+
+
 def main(argv):
     path = argv[1] if len(argv) > 1 else DEFAULT_CFG
     if not os.path.isfile(path):
@@ -474,8 +688,10 @@ def main(argv):
             sys.stderr.write("FAIL: %s\n" % message)
         return 1
     print("ok: service macros render. MAINTENANCE_MODE parks at Z%s Y%s X%s/%s, "
-          "NOZZLE_CHANGE presents T0 at X%s / T1 at X%s at %sC"
-          % (Z_MID, Y_FRONT, X_T0, X_T1, NOZZLE_X_T0, NOZZLE_X_T1, NOZZLE_TEMP))
+          "NOZZLE_CHANGE presents T0 at X%s / T1 at X%s at %sC, lubrication "
+          "stops at Z%s Y%s X%s"
+          % (Z_MID, Y_FRONT, X_T0, X_T1, NOZZLE_X_T0, NOZZLE_X_T1, NOZZLE_TEMP,
+             LUBE_STATIONS["Z"], LUBE_STATIONS["Y"], LUBE_STATIONS["X"]))
     return 0
 
 

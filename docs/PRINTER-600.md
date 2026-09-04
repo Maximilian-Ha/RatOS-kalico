@@ -73,7 +73,7 @@ computes 673, one millimetre further out than what runs today.
 
 ## The service macros
 
-`maintenance.cfg` ships alongside the definition and defines four macros
+`maintenance.cfg` ships alongside the definition and defines the macros
 Mainsail lists as buttons.
 
 ### MAINTENANCE_MODE — into the service position
@@ -115,6 +115,56 @@ a warning, not a refusal — a hot pull wants exactly that state.
 does, a `delayed_gcode` turns it off after 15 minutes: Klipper's own
 `idle_timeout` is two hours in RatOS, far too long to leave 300 °C unattended
 because someone walked away mid-change.
+
+### LUBE_X / LUBE_Y / LUBE_Z — guided greasing
+
+Each run walks its axis through **three stations** and stops at every one so
+you can apply grease, then sweeps the full travel twice to spread it, ending
+where it started:
+
+| Axis | Station 1 | Station 2 | Station 3 |
+|---|---|---|---|
+| Z | `Z10`, bed at the top | `Z327.5` | `Z645`, bed at the bottom |
+| Y | `Y9`, gantry at the front | `Y299.5` | `Y590`, gantry at the back |
+| X | `X−65`, both toolheads left | `X265` | `X595`, both toolheads right |
+
+**Every number in that table is derived, not written down.** The ends are the
+axis limits minus a 10 mm margin, the middle is the midpoint of the two. Change
+the printer size and the stations move with it — which is the point, since the
+same file has to work if the frame ever changes.
+
+Three of those derivations are deliberate rather than mechanical:
+
+- **Z counts from 0, not from `axis_minimum`** (−5). Below zero is probe
+  territory, and it is not where a hand holding a brush belongs.
+- **Y stops at `printable_y_max`**, not at the mechanical limit of 665. The last
+  stretch of Y travel is where the VAOC camera sits; that area is entered
+  deliberately by the VAOC macros or not at all.
+- **An X station is the *left* carriage's position.** The right one follows a
+  `safe_distance` + 10 mm behind, so the pair moves as one block and the far
+  station is the right limit minus the margin *and* the spacing.
+
+Small Z means the bed is **up** — Z is the nozzle-to-bed distance, and getting
+that backwards is the easiest mistake to make here. The dialog therefore says
+"bed at the top", not just a number.
+
+**Continuing a run.** Mainsail and Fluidd render `action:prompt_*` as a dialog,
+so each stop shows a **Continue** button — which sends nothing more magic than
+the command `LUBE_NEXT`. Typing `LUBE_NEXT` in the console does exactly the
+same, and on a frontend without dialog support the prompt lines are simply
+console output. Nothing depends on the dialog existing. `LUBE_ABORT` drops the
+run where it stands.
+
+Before every move the macro echoes what it is about to do and then dwells three
+seconds (`variable_move_delay`), because the operator's hands are in the machine
+by definition. Before the run starts, whatever is not being greased is moved out
+of the way: for Z the gantry goes to the back and both carriages park, for X and
+Y the bed drops to mid height.
+
+An X station goes through `PARK_TOOLHEAD` like everything else here. That costs
+one traverse per station and buys not having to know where the carriages were —
+moving a pair to new positions in the wrong order trips `safe_distance`. On the
+sweeps that traverse is not even waste; it spreads grease.
 
 ### What the two helpers are for
 

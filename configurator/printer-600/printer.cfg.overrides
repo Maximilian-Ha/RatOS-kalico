@@ -66,6 +66,10 @@ safe_distance: 60
 #   NOZZLE_CHANGE      presents one nozzle 200mm in from its parking position
 #                      (T0 X127 / T1 X473) at 300C, with a 15 minute timeout
 #   NOZZLE_CHANGE_END  heater off, timeout cancelled
+#   LUBE_X/Y/Z         guided greasing: three stations per axis to apply grease
+#                      at, then sweeps to spread it. Continue with the dialog's
+#                      button or by typing LUBE_NEXT; LUBE_ABORT drops the run.
+#                      Stations are derived from the axis limits, not hardcoded
 #
 # They are not included by anything. Add this line to printer.cfg, below
 # [include RatOS.cfg]:
