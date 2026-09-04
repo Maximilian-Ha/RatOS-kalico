@@ -10,6 +10,13 @@
 # Usage:
 #   scripts/build-configurator-fork.sh [--push] [--kalico-commit SHA]
 #                                      [--base <commit-ish>] [--no-sweeping-period]
+#                                      [--changelog-since <commit-ish>]
+#
+# --changelog-since overrides where the printer-facing changelog starts. The
+# range normally comes from the RatOS-Kalico-Definition trailer of the last
+# published build; pass this when that trailer is missing (the first build
+# after changelogs were introduced) or wrong, and the bullets are the
+# RatOS-kalico commits from there to HEAD instead.
 #
 # NOTE: this produces the SOURCE branch. Moonraker pulls the DEPLOYMENT branch,
 # which carries a built Next.js app -- see docs/MAINTENANCE.md, "The deployment
@@ -22,6 +29,7 @@ source "$SCRIPT_DIR/lib.sh"
 PUSH=0
 BASE=""
 KALICO_COMMIT=""
+CHANGELOG_SINCE=""
 EXTRA_ARGS=()
 
 while [ $# -gt 0 ]; do
@@ -36,6 +44,11 @@ while [ $# -gt 0 ]; do
 		shift
 		BASE="${1:-}"
 		[ -n "$BASE" ] || die "--base needs a commit-ish"
+		;;
+	--changelog-since)
+		shift
+		CHANGELOG_SINCE="${1:-}"
+		[ -n "$CHANGELOG_SINCE" ] || die "--changelog-since needs a commit-ish"
 		;;
 	--no-sweeping-period) EXTRA_ARGS+=(--no-sweeping-period) ;;
 	-h | --help)
@@ -121,7 +134,8 @@ bash -n "$CHECKOUT/configuration/scripts/ratos-common.sh" ||
 PYTHONPYCACHEPREFIX="$WORK_DIR/pycache" python3 -m py_compile \
 	"$CHECKOUT/configuration/klippy/kinematics/ratos_hybrid_corexy.py" \
 	"$CHECKOUT/configuration/klippy/ratos_homing.py" \
-	"$CHECKOUT/configuration/klippy/resonance_generator.py" ||
+	"$CHECKOUT/configuration/klippy/resonance_generator.py" \
+	"$CHECKOUT/configuration/klippy/beacon_adaptive_heat_soak.py" ||
 	die "patched klippy modules do not compile"
 # py_compile cannot see a name that is read but never bound -- exactly the
 # shape of bug a re-shaped assignment leaves behind, and on a printer Klippy
@@ -129,8 +143,15 @@ PYTHONPYCACHEPREFIX="$WORK_DIR/pycache" python3 -m py_compile \
 python3 "$REPO_ROOT/tests/check_undefined_names.py" \
 	"$CHECKOUT/configuration/klippy/kinematics/ratos_hybrid_corexy.py" \
 	"$CHECKOUT/configuration/klippy/ratos_homing.py" \
-	"$CHECKOUT/configuration/klippy/resonance_generator.py" ||
+	"$CHECKOUT/configuration/klippy/resonance_generator.py" \
+	"$CHECKOUT/configuration/klippy/beacon_adaptive_heat_soak.py" ||
 	die "a patched klippy module reads a name nothing binds"
+# The heat soak blocks the G-code queue for up to 90 minutes; the report is the
+# only thing that says whether it is converging. Its failure mode is silence,
+# so check it structurally rather than trusting that the file compiles.
+python3 "$REPO_ROOT/tests/test_heat_soak_report.py" \
+	"$CHECKOUT/configuration/klippy/beacon_adaptive_heat_soak.py" ||
+	die "the patched heat soak does not report progress to the console"
 
 # The migration script re-reads this value with an awk parser that demands
 # exactly 40 hex characters and, thanks to an ERR-trap interaction, reports a
@@ -161,6 +182,85 @@ if [ -d "$P600" ]; then
 	[ -f "$P600/v-core-4-idex.png" ] ||
 		die "the 600 printer type has no image"
 fi
+
+# --- the changelog a printer owner actually sees ---------------------------
+#
+# Mainsail's update dialog lists the DEPLOYMENT branch's commits and shows each
+# subject, with the body behind the "..." expander. That message is written by
+# publish-kalico.yml, which lifts it out of the "Printer changelog:" section of
+# THIS commit -- so this block is the only place a printer's changelog can come
+# from. Keep the marker line in step with the workflow template;
+# tests/test_changelog_message.py fails if the two drift apart.
+#
+# The bullets are the RatOS-kalico commits since the previously published
+# build, which is identified by the RatOS-Kalico-Definition trailer this script
+# wrote into that build's message. If that commit is unknown -- a first build,
+# or a checkout without it -- say so rather than printing a changelog that
+# might be wrong. A changelog nobody can trust is worse than none.
+ensure_fork_remote "$CHECKOUT" "$FORK_CONFIGURATOR_URL"
+DEFINITION_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+PREV_MESSAGE="$(git -C "$CHECKOUT" log -1 --format=%B \
+	"fork/$FORK_CONFIGURATOR_BRANCH" 2>/dev/null || true)"
+PREV_DEFINITION="$(printf '%s\n' "$PREV_MESSAGE" |
+	sed -n 's/^RatOS-Kalico-Definition: \([0-9a-f]\{40\}\)$/\1/p' | head -1)"
+PREV_KALICO="$(printf '%s\n' "$PREV_MESSAGE" |
+	sed -n 's/^Klipper pinned to \([0-9a-f]\{40\}\).*$/\1/p' | head -1)"
+
+if [ -n "$CHANGELOG_SINCE" ]; then
+	PREV_DEFINITION="$(git -C "$REPO_ROOT" rev-parse --verify "${CHANGELOG_SINCE}^{commit}" 2>/dev/null)" ||
+		die "--changelog-since '$CHANGELOG_SINCE' is not a commit in this repository"
+	note "changelog starts at $CHANGELOG_SINCE (${PREV_DEFINITION:0:12}), overriding the trailer"
+fi
+
+# Every bullet stays on ONE line. The subject is derived from the first one,
+# and a wrapped bullet would truncate it mid-sentence -- which is exactly the
+# unreadable line this whole section exists to replace.
+SUBJECT=""
+if [ -z "$PREV_DEFINITION" ]; then
+	SUBJECT="RatOS-Kalico configurator update (no changelog recorded)"
+	BULLETS="- the previously published build predates changelogs, so what changed since it is not recorded"
+elif ! git -C "$REPO_ROOT" cat-file -e "${PREV_DEFINITION}^{commit}" 2>/dev/null; then
+	SUBJECT="RatOS-Kalico configurator update (no changelog recorded)"
+	BULLETS="- the previous build came from RatOS-kalico ${PREV_DEFINITION:0:12}, which this checkout does not contain"
+else
+	BULLETS="$(git -C "$REPO_ROOT" log --no-merges --max-count=25 \
+		--format='- %s' "$PREV_DEFINITION..HEAD" || true)"
+	if [ -z "$BULLETS" ]; then
+		SUBJECT="Rebuilt against current upstream (fork definition unchanged)"
+		BULLETS="- no changes to the fork definition since the last published build"
+	fi
+fi
+
+# A Klipper pin change means the NEXT update also moves the firmware, which is
+# the one thing on this list worth reading before pressing update.
+if [ -z "$PREV_KALICO" ]; then
+	KLIPPER_LINE="Klipper firmware: ${KALICO_COMMIT:0:12}"
+elif [ "$PREV_KALICO" = "$KALICO_COMMIT" ]; then
+	KLIPPER_LINE="Klipper firmware: unchanged (${KALICO_COMMIT:0:12})"
+else
+	KLIPPER_LINE="Klipper firmware: MOVED ${PREV_KALICO:0:12} -> ${KALICO_COMMIT:0:12};
+the klipper entry will offer an update too"
+fi
+
+# The first line becomes the deployment commit's subject -- the one line
+# Mainsail shows without expanding anything -- so it has to carry the most
+# useful thing on its own.
+if [ -z "$SUBJECT" ]; then
+	CHANGE_COUNT="$(printf '%s\n' "$BULLETS" | grep -c '^- ' || true)"
+	FIRST_CHANGE="$(printf '%s\n' "$BULLETS" | sed -n '1s/^- //p')"
+	if [ "$CHANGE_COUNT" -gt 1 ]; then
+		SUBJECT="$FIRST_CHANGE (+$((CHANGE_COUNT - 1)) more)"
+	else
+		SUBJECT="$FIRST_CHANGE"
+	fi
+fi
+
+PRINTER_CHANGELOG="$SUBJECT
+
+$BULLETS
+
+$KLIPPER_LINE
+Built from RatOS-kalico ${DEFINITION_SHA:0:12}, RatOS ${BASE:0:12}"
 
 say "Committing"
 # Stage everything the patcher touched. An explicit path list is how the numpy
@@ -211,7 +311,12 @@ and would silently turn every sweep into plain vibration pulses.
 
 Generated by scripts/build-configurator-fork.sh from
 $BASE
-Klipper pinned to $KALICO_COMMIT ($FORK_KALICO_BRANCH)"
+Klipper pinned to $KALICO_COMMIT ($FORK_KALICO_BRANCH)
+
+RatOS-Kalico-Definition: $DEFINITION_SHA
+
+Printer changelog:
+$PRINTER_CHANGELOG"
 
 # Nothing may be left behind. If the patcher wrote a file the commit did not
 # take, the working tree still looks right while the published branch is wrong
@@ -222,6 +327,13 @@ if [ -n "$LEFTOVER" ]; then
 	die "files changed by the build were not committed (listed above).
     The published branch would not match what was built."
 fi
+
+# The changelog is assembled here and consumed by publish-kalico.yml, which
+# cannot fail loudly: a broken marker just quietly restores "Deploy <sha>" as
+# the only thing a printer owner sees. Check it while both halves are in reach.
+python3 "$REPO_ROOT/tests/test_changelog_message.py" "$CHECKOUT" \
+	"$REPO_ROOT/configurator/publish-kalico.yml.in" ||
+	die "the printer-facing changelog is not usable"
 
 CONFIGURATOR_COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"
 

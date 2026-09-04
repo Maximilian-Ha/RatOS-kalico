@@ -29,6 +29,22 @@ import sys
 
 BUILTINS = set(dir(builtins))
 
+# Bound by the import machinery rather than by any statement in the file, so
+# symtable reports them as free reads. `__file__` is how a klippy extension
+# finds data files shipped beside it -- beacon_adaptive_heat_soak.py loads its
+# model training CSV that way -- and flagging it is a false alarm, which is the
+# one thing a tripwire may not do.
+MODULE_DUNDERS = {
+    "__file__",
+    "__name__",
+    "__doc__",
+    "__package__",
+    "__spec__",
+    "__loader__",
+    "__builtins__",
+    "__debug__",
+}
+
 
 def bound_names(table, acc):
     """Every name bound anywhere in the file, at any scope depth."""
@@ -59,7 +75,7 @@ def free_reads(table, bound, out, path):
                 continue
             if not sym.is_referenced():
                 continue
-            if name in BUILTINS or name in bound:
+            if name in BUILTINS or name in MODULE_DUNDERS or name in bound:
                 continue
             out.append((path, table.get_name(), name))
     for child in table.get_children():

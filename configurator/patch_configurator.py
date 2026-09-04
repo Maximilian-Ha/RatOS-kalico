@@ -412,6 +412,104 @@ def t_beacon_homing_retract(text, cfg):
     )
 
 
+def t_beacon_heat_soak_console_report(text, cfg):
+    """Echo adaptive heat soak progress to the console while the soak runs.
+
+    ``BEACON_WAIT_FOR_PRINTER_HEAT_SOAK`` blocks the G-code queue for up to
+    ``MAXIMUM_WAIT`` seconds -- 90 minutes by default, and a real soak on a 600
+    frame routinely runs 30-60. In that whole window upstream says exactly two
+    things on the console: "Adaptive heat soak started" at the top and
+    "completed in Xh Ym" at the end. Everything that would tell an operator
+    whether it is converging or stuck -- elapsed time, progress, the Z-rate
+    moving average, the threshold it has to fall under and how long it has held
+    there -- is computed every iteration and then written only to
+    ``klippy.log`` (``logging.info``, throttled to every 20th Z-rate).
+
+    A macro cannot fill that gap. The wait runs inside a G-code command and
+    holds the G-code mutex for its whole duration, so a ``delayed_gcode``
+    scheduled alongside it does not get to run until the soak is over -- it
+    blocks on the mutex and then prints its lines in a useless burst at the
+    end. The progress spinner the module already drives
+    (``BackgroundDisplayStatusProgressHandler``) sidesteps that only because it
+    writes ``display_status`` directly from a reactor timer, in Python, without
+    the mutex. The report therefore has to come from inside the loop, which
+    means from this module.
+
+    So: one ``respond_info`` per interval, off the values the loop already has.
+
+    ``console_report_interval`` (seconds, in ``[beacon_adaptive_heat_soak]``)
+    sets the cadence and defaults to 300 -- one line every five minutes, ~12
+    lines on a typical soak. 0 disables it entirely. ``REPORT_INTERVAL=`` on
+    the command overrides it per call. The default is deliberately not 0: the
+    stock behaviour is the thing being fixed.
+
+    The interval must stay coarse. The loop iterates roughly once a second
+    (1000 samples per mean at the beacon's ~1 kHz), and an interval near that
+    would flood the console -- which is what the developer-only
+    ``_BEACON_WAIT_FOR_PRINTER_HEAT_SOAK_CAPTURE_Z_RATES`` command does on
+    purpose, and why it is not the answer here.
+
+    Nothing about the soak's decision path is touched: no threshold, no hold
+    count, no trend check, no timing. The patch reads state and prints it.
+    """
+    text = sub_once(
+        text,
+        "\t\tself.def_minimum_wait = config.getint('default_minimum_wait', 0, minval=0)\n",
+        "\t\tself.def_minimum_wait = config.getint('default_minimum_wait', 0, minval=0)\n"
+        "\n"
+        "\t\t# " + MARKER + ": seconds between console progress reports while the soak\n"
+        "\t\t# runs. 0 disables them. Override in printer.cfg with\n"
+        "\t\t#     [beacon_adaptive_heat_soak]\n"
+        "\t\t#     console_report_interval: 300\n"
+        "\t\t# placed after the RatOS includes, or per call with REPORT_INTERVAL=.\n"
+        "\t\tself.def_console_report_interval = config.getint('console_report_interval', 300, minval=0)\n",
+        "beacon_adaptive_heat_soak: console_report_interval option",
+    )
+    text = sub_once(
+        text,
+        "\t\tmaximum_first_layer_duration = max(60, min(7200, gcmd.get_int('MAXIMUM_FIRST_LAYER_DURATION', self.def_maximum_first_layer_duration, minval=0)))\n",
+        "\t\tmaximum_first_layer_duration = max(60, min(7200, gcmd.get_int('MAXIMUM_FIRST_LAYER_DURATION', self.def_maximum_first_layer_duration, minval=0)))\n"
+        "\n"
+        "\t\t# " + MARKER + ": per-call override of the console report cadence.\n"
+        "\t\tconsole_report_interval = gcmd.get_int('REPORT_INTERVAL', self.def_console_report_interval, minval=0)\n",
+        "beacon_adaptive_heat_soak: REPORT_INTERVAL parameter",
+    )
+    text = sub_once(
+        text,
+        "\t\t\t\tprogress_on_final_approach = False\n",
+        "\t\t\t\tprogress_on_final_approach = False\n"
+        "\t\t\t\t# " + MARKER + ": elapsed time at which the next console report is due.\n"
+        "\t\t\t\tnext_console_report = float(console_report_interval)\n",
+        "beacon_adaptive_heat_soak: report clock",
+    )
+    text = sub_once(
+        text,
+        "\t\t\t\t\telif should_log:\n"
+        "\t\t\t\t\t\tlogging.info(f\"{self.name}: elapsed={elapsed:.1f} s, waiting for first moving average to be available...\")\n",
+        "\t\t\t\t\telif should_log:\n"
+        "\t\t\t\t\t\tlogging.info(f\"{self.name}: elapsed={elapsed:.1f} s, waiting for first moving average to be available...\")\n"
+        "\n"
+        "\t\t\t\t\t# " + MARKER + ": same numbers as the logging.info calls above, on the\n"
+        "\t\t\t\t\t# console, throttled to console_report_interval. Sits at loop level so\n"
+        "\t\t\t\t\t# it also reports during the first few minutes, before the first moving\n"
+        "\t\t\t\t\t# average exists and there is otherwise nothing at all to see.\n"
+        "\t\t\t\t\tif console_report_interval and elapsed >= next_console_report:\n"
+        "\t\t\t\t\t\tnext_console_report = elapsed + console_report_interval\n"
+        "\t\t\t\t\t\tif moving_average is None:\n"
+        "\t\t\t\t\t\t\tgcmd.respond_info(\n"
+        "\t\t\t\t\t\t\t\tf\"Heat soak: {self._format_seconds(elapsed)} elapsed, still collecting the \"\n"
+        "\t\t\t\t\t\t\t\tf\"first Z-rate average (takes about {self._format_seconds(estimated_time_to_first_moving_average)}), \"\n"
+        "\t\t\t\t\t\t\t\tf\"target <= {threshold:.2f} nm/s.\")\n"
+        "\t\t\t\t\t\telse:\n"
+        "\t\t\t\t\t\t\tgcmd.respond_info(\n"
+        "\t\t\t\t\t\t\t\tf\"Heat soak: {self._format_seconds(elapsed)} elapsed, {progress_handler.progress * 100.0:.1f}%, \"\n"
+        "\t\t\t\t\t\t\t\tf\"Z-rate {moving_average:.2f} nm/s, target <= {threshold:.2f} nm/s, \"\n"
+        "\t\t\t\t\t\t\t\tf\"steady {moving_average_hold_count}/{moving_average_target_hold_count}.\")\n",
+        "beacon_adaptive_heat_soak: console report",
+    )
+    return text
+
+
 def t_led_vaoc_pwm(text, cfg):
     """Let the VAOC light work when it is a plain PWM LED, not a neopixel.
 
@@ -934,6 +1032,10 @@ FILE_TRANSFORMS = [
     ("configuration/klippy/requirements.txt", [t_klippy_requirements]),
     ("src/server/helpers/klipper-config.ts", [t_tmc2240_rref]),
     ("configuration/z-probe/beacon.cfg", [t_beacon_homing_retract]),
+    (
+        "configuration/klippy/beacon_adaptive_heat_soak.py",
+        [t_beacon_heat_soak_console_report],
+    ),
     ("configuration/macros/led_control.cfg", [t_led_vaoc_pwm]),
     ("src/scripts/check-version.py", [t_check_version_package_import]),
 ]

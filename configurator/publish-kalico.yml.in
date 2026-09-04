@@ -135,14 +135,37 @@ jobs:
             || { echo "app/.env still points at /src/scripts"; exit 1; }
           echo "deployment tree looks sane"
 
+      # Mainsail's update dialog lists THIS branch's commits and shows each
+      # subject, with the body behind the "..." expander -- so this message is
+      # the entire changelog a printer owner ever sees. build-configurator-fork.sh
+      # composes it and parks it after a "Printer changelog:" line in the source
+      # commit; lift it out verbatim. A source commit without that section (one
+      # built before changelogs existed) falls back to naming the commit, which
+      # is what this step used to do unconditionally.
+      - name: Compose the printer-facing commit message
+        id: message
+        shell: bash
+        run: |
+          changelog="$(git log -1 --format=%B HEAD |
+            awk '/^Printer changelog:$/{found=1;next} found')"
+          if [ -z "$(printf '%s' "$changelog" | tr -d '[:space:]')" ]; then
+            changelog="Deploy @@SOURCE_BRANCH@@ ${{ github.sha }}
+
+          Built from @@FORK_URL_HTML@@/commit/${{ github.sha }}"
+            echo "no Printer changelog section in the source commit -- using the fallback"
+          fi
+          {
+            echo "text<<PRINTER_CHANGELOG_EOF"
+            printf '%s\n' "$changelog"
+            echo "PRINTER_CHANGELOG_EOF"
+          } >>"$GITHUB_OUTPUT"
+          printf 'the printer will see:\n%s\n' "$changelog"
+
       - name: Publish to ${{ steps.variables.outputs.target-branch }}
         uses: JamesIves/github-pages-deploy-action@v4
         with:
           folder: .
-          commit-message: |
-            Deploy @@SOURCE_BRANCH@@ ${{ github.sha }}
-
-            Built from @@FORK_URL_HTML@@/commit/${{ github.sha }}
+          commit-message: ${{ steps.message.outputs.text }}
           git-config-name: github-actions[bot]
           git-config-email: 41898282+github-actions[bot]@users.noreply.github.com
           branch: ${{ steps.variables.outputs.target-branch }}
