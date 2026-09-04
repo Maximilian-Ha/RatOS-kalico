@@ -93,6 +93,40 @@ from upstream and is coupled to RatOS' source layout — if a release moves
 directories under `src/`, that list moves with it. And this workflow has never
 actually run: the pnpm build is unproven here. Watch the first run.
 
+### The changelog the printer shows
+
+Mainsail's update dialog lists the commits of the branch Moonraker tracks — the
+deployment branch — and shows each commit's **subject**, with the body behind
+the `...` expander. Nothing else on that screen is ours to write, so that commit
+message *is* the changelog, and until now it read `Deploy v2.1.x-kalico <sha>`,
+which tells a printer owner nothing about what is about to change on their
+machine.
+
+It is assembled by two halves that cannot see each other:
+
+| Where | What it does |
+|---|---|
+| `scripts/build-configurator-fork.sh` | composes the text and parks it after a `Printer changelog:` line in the **source** commit, plus a `RatOS-Kalico-Definition: <sha>` trailer naming the RatOS-kalico commit it was built from |
+| `configurator/publish-kalico.yml.in` | lifts that section out of the source commit and hands it to the deploy action as the commit message |
+
+The bullets are `git log --no-merges` over the RatOS-kalico commits between the
+**previously published** build's trailer and this one, so the list is derived,
+never hand-maintained. The first bullet becomes the subject, with `(+N more)`
+appended — that one line is all Mainsail shows without expanding anything. The
+`Klipper firmware:` line says whether the pin moved, because a moved pin means
+the klipper entry will offer an update too.
+
+When the previous build's trailer is missing or names a commit this checkout
+does not have, the changelog says so instead of guessing. A changelog nobody
+can trust is worse than none.
+
+Breaking this is silent by construction: the workflow falls back to the old
+`Deploy <sha>` message, the publish still succeeds and the printer still
+updates. `tests/test_changelog_message.py` therefore checks both halves
+together — that the marker still matches, that the subject is a subject rather
+than a wrapped bullet, and that the firmware line is there. It runs inside
+`build-configurator-fork.sh` itself, on every build, not only in `run-all.sh`.
+
 ---
 
 ## Things that must move together

@@ -100,6 +100,12 @@ else
 	printf 'ok: unpatched heat soak fails as expected\n'
 fi
 
+# --- 3c. the changelog a printer owner sees --------------------------------
+
+run "the build publishes a readable changelog" \
+	python3 "$SCRIPT_DIR/test_changelog_message.py" "$CONF" \
+	"$SCRIPT_DIR/../configurator/publish-kalico.yml.in"
+
 # --- 4. everything still parses --------------------------------------------
 
 printf '\n--- syntax ---\n'
