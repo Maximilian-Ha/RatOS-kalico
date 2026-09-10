@@ -78,10 +78,17 @@ for _stations in LUBE_STATIONS.values():
 LUBE_SAVE_AFTER = 360      # seconds of print time that pile up before a disk write
 LUBE_SAMPLE_INTERVAL = 60  # seconds between samples
 
+# The bed is one plate over four heaters: heater_bed is Klipper's own, the rest
+# are [heater_generic] sections.
+BED_ZONES = ["heater_bed", "BED_VR", "BED_HL", "BED_HR"]
+BED_TEMP = 80
+BED_COOL_BELOW = 40
+
 PUBLIC_MACROS = {
     "MAINTENANCE_MODE", "MAINTENANCE_END", "NOZZLE_CHANGE", "NOZZLE_CHANGE_END",
     "LUBE_X", "LUBE_Y", "LUBE_Z", "LUBE_NEXT", "LUBE_ABORT",
     "LUBE_STATUS", "LUBE_MARK",
+    "PID_TUNE_BEDS", "PID_TUNE_BED",
 }
 INTERNAL_MACROS = {
     "_MAINTENANCE_APPROACH", "_MAINTENANCE_POSITION_TOOLHEADS",
@@ -89,6 +96,7 @@ INTERNAL_MACROS = {
     "_LUBE_START", "_LUBE_ADVANCE", "_LUBE_FINISH", "_LUBE_MOVE",
     "_LUBE_CLEAR", "_LUBE_PROMPT",
     "_LUBE_RECORD", "_LUBE_HOURS", "_LUBE_HOURS_TICK",
+    "_PID_TUNE_BED_WARN", "_PID_TUNE_BED_ZONE",
 }
 
 
@@ -100,7 +108,7 @@ def printer_state(idex_mode="INACTIVE", homed="xyz", printing="standby",
                   hotend_temp=25.0, nozzle_change_tool=-1, filament=None,
                   lube_axis="", lube_stations=None, lube_travel=None,
                   saved=None, print_duration=0.0, unsaved=0.0,
-                  last_duration=0.0):
+                  last_duration=0.0, bed_zones=None, bed_zones_cfg=False):
     """A stand-in for Klippy's `printer` object, with the 600's config.
 
     idex_mode is [dual_carriage].carriage_1 as Klippy reports it: INACTIVE when
@@ -155,6 +163,11 @@ def printer_state(idex_mode="INACTIVE", homed="xyz", printing="standby",
             "save_after": LUBE_SAVE_AFTER,
         },
         "gcode_macro LUBE_STATUS": {"interval_hours": 100, "show_dates": True},
+        "gcode_macro PID_TUNE_BEDS": {
+            "zones": ",".join(BED_ZONES),
+            "temp": BED_TEMP,
+            "cool_below": BED_COOL_BELOW,
+        },
         # _LUBE_START carries the state of a lubrication run across the
         # separate commands that make one up.
         "gcode_macro _LUBE_START": {
@@ -167,6 +180,15 @@ def printer_state(idex_mode="INACTIVE", homed="xyz", printing="standby",
             "move_delay": LUBE_DELAY,
         },
     }
+    zones = BED_ZONES if bed_zones is None else bed_zones
+    for zone in zones:
+        if zone == "heater_bed":
+            state["heater_bed"] = {"temperature": 25.0, "target": 0.0}
+        else:
+            state["heater_generic %s" % zone] = {"temperature": 25.0, "target": 0.0}
+    if bed_zones_cfg:
+        # The unrelated bed-zones.cfg, which mirrors heater_bed onto the rest.
+        state["gcode_macro _BED_ZONES"] = {"mode": "all"}
     for tool in filament or []:
         state["filament_switch_sensor toolhead_filament_sensor_t%d" % tool] = {
             "filament_detected": True
@@ -248,6 +270,15 @@ def refuses(macros, name, printer, params=None, variables=None):
     return False
 
 
+def refusal_message(macros, name, printer, params=None, variables=None):
+    """The message a macro aborts with, or None if it did not abort."""
+    try:
+        render(macros, name, printer, params, variables)
+    except MacroError as exc:
+        return str(exc)
+    return None
+
+
 def check(path):
     macros = load_macros(path)
     failures = []
@@ -282,6 +313,9 @@ def check(path):
     check_lube_hours(macros, expect)
     check_lube_record(macros, expect)
     check_lube_status(macros, expect)
+    check_bed_pid_all(macros, expect)
+    check_bed_pid_zone(macros, expect)
+    check_bed_pid_single(macros, expect)
     return failures
 
 
@@ -818,6 +852,137 @@ def check_lube_status(macros, expect):
                             variables={"show_dates": False}))
     expect("RUN_SHELL_COMMAND" not in text,
            "show_dates=False still runs the shell command")
+
+
+def check_bed_pid_all(macros, expect):
+    """All four zones in sequence, and exactly one save at the end."""
+    lines = render(macros, "PID_TUNE_BEDS", printer_state())
+    calls = [l for l in lines if l.startswith("_PID_TUNE_BED_ZONE")]
+    expect(len(calls) == len(BED_ZONES),
+           "%d zones tuned, expected %d (%s)" % (len(calls), len(BED_ZONES), calls))
+    for i, (call, zone) in enumerate(zip(calls, BED_ZONES), start=1):
+        expect("HEATER=%s " % zone in call + " ",
+               "run %d tunes %r, expected %s" % (i, call, zone))
+        expect("STEP=%d" % i in call and "TOTAL=%d" % len(BED_ZONES) in call,
+               "run %d is not numbered %d of %d (%s)" % (i, i, len(BED_ZONES), call))
+        expect("TEMP=%d" % BED_TEMP in call, "run %d does not carry the target (%s)" % (i, call))
+
+    # One SAVE_CONFIG hint, at the end: Klipper accumulates the pending config
+    # of all four calibrations, so one save writes them all and the printer
+    # restarts once instead of four times.
+    saves = [i for i, l in enumerate(lines) if l == "_CONSOLE_SAVE_CONFIG"]
+    expect(len(saves) == 1,
+           "%d save prompts, expected exactly one -- a save between runs "
+           "restarts the printer and drops the rest" % len(saves))
+    if saves:
+        expect(saves[0] > lines.index(calls[-1]),
+               "the save prompt comes before the last zone is tuned")
+
+    # A machine without the generic zones tunes what it has.
+    lines = render(macros, "PID_TUNE_BEDS", printer_state(bed_zones=["heater_bed"]))
+    calls = [l for l in lines if l.startswith("_PID_TUNE_BED_ZONE")]
+    expect(len(calls) == 1 and "HEATER=heater_bed " in calls[0] + " ",
+           "a printer with only heater_bed did not tune just that (%s)" % calls)
+    expect("TOTAL=1" in calls[0], "the run count was not adjusted (%s)" % calls[0])
+
+    # No zones at all is a config error, not a silent no-op.
+    expect(refuses(macros, "PID_TUNE_BEDS", printer_state(bed_zones=[])),
+           "PID_TUNE_BEDS did nothing, and said nothing, with no zones present")
+
+    for state in ("printing", "paused"):
+        expect(refuses(macros, "PID_TUNE_BEDS", printer_state(printing=state)),
+               "a bed PID run started while %s" % state)
+
+
+def check_bed_pid_zone(macros, expect):
+    """One zone: cool the whole plate first, tune, leave it off."""
+    lines = render(macros, "_PID_TUNE_BED_ZONE", printer_state(),
+                   params={"HEATER": "BED_VR", "TEMP": str(BED_TEMP),
+                           "COOL_BELOW": str(BED_COOL_BELOW),
+                           "STEP": "2", "TOTAL": "4"})
+
+    i_cal = index_of(lines, r"^PID_CALIBRATE\b")
+    offs = [i for i, l in enumerate(lines)
+            if l.startswith("SET_HEATER_TEMPERATURE") and "TARGET=0" in l]
+    waits = [i for i, l in enumerate(lines) if l.startswith("TEMPERATURE_WAIT")]
+
+    # Every zone is switched off, before anything is measured: a neighbour
+    # still heating is heat flowing into the zone under test.
+    expect(len([i for i in offs if i < i_cal]) == len(BED_ZONES),
+           "expected all %d zones switched off before the calibration, got %d"
+           % (len(BED_ZONES), len([i for i in offs if i < i_cal])))
+    expect(waits and max(waits) < i_cal and min(waits) > min(offs),
+           "the cooldown must sit between switching the zones off and the "
+           "calibration (%s)" % lines)
+
+    # TEMPERATURE_WAIT matches the FULL section name; PID_CALIBRATE and
+    # SET_HEATER_TEMPERATURE take the bare heater name. Getting that backwards
+    # is an error mid-run, hours into the procedure.
+    text = "\n".join(lines)
+    expect('SENSOR="heater_bed"' in text,
+           "heater_bed is not waited on by its section name (%s)" % text)
+    for zone in BED_ZONES:
+        if zone == "heater_bed":
+            continue
+        expect('SENSOR="heater_generic %s"' % zone in text,
+               "%s is waited on by its bare name, which TEMPERATURE_WAIT does "
+               "not accept" % zone)
+    for i in waits:
+        expect("MAXIMUM=%d" % BED_COOL_BELOW in lines[i],
+               "a cooldown wait is not bounded from above (%s)" % lines[i])
+
+    cal = lines[i_cal]
+    expect("HEATER=BED_VR" in cal and "TARGET=%d" % BED_TEMP in cal,
+           "the calibration line is %r" % cal)
+    expect([l for l in lines[i_cal + 1:]
+            if l.startswith("SET_HEATER_TEMPERATURE") and "HEATER=BED_VR" in l
+            and "TARGET=0" in l],
+           "the zone is left heating after its calibration (%s)" % lines)
+
+    # COOL_BELOW=0 is the documented way to skip the wait.
+    lines = render(macros, "_PID_TUNE_BED_ZONE", printer_state(),
+                   params={"HEATER": "heater_bed", "TEMP": "80", "COOL_BELOW": "0"})
+    expect(not [l for l in lines if l.startswith("TEMPERATURE_WAIT")],
+           "COOL_BELOW=0 still waited for the plate to cool")
+
+
+def check_bed_pid_single(macros, expect):
+    for arg, zone in (("1", "heater_bed"), ("4", "BED_HR"),
+                      ("BED_HL", "BED_HL"), ("bed_hl", "BED_HL")):
+        lines = render(macros, "PID_TUNE_BED", printer_state(), params={"ZONE": arg})
+        call = lines[index_of(lines, r"^_PID_TUNE_BED_ZONE")]
+        expect("HEATER=%s " % zone in call + " ",
+               "ZONE=%s tuned %r, expected %s" % (arg, call, zone))
+        expect(len([l for l in lines if l == "_CONSOLE_SAVE_CONFIG"]) == 1,
+               "ZONE=%s did not end with exactly one save prompt" % arg)
+
+    for arg in ("9", "0", "", "BED_XX"):
+        msg = refusal_message(macros, "PID_TUNE_BED", printer_state(), params={"ZONE": arg})
+        expect(msg is not None, "PID_TUNE_BED accepted ZONE=%r" % arg)
+        # Refusing is half the job; the operator has to learn what to type
+        # instead, without going to read the config file.
+        expect(msg is None or all(z in msg for z in BED_ZONES),
+               "ZONE=%r was refused with %r, which does not name the zones that "
+               "would have worked" % (arg, msg))
+    expect(refuses(macros, "PID_TUNE_BED", printer_state(), params={}),
+           "PID_TUNE_BED accepted a missing ZONE")
+    # Named zone that this printer does not have.
+    expect(refuses(macros, "PID_TUNE_BED", printer_state(bed_zones=["heater_bed"]),
+                   params={"ZONE": "BED_VR"}),
+           "PID_TUNE_BED tuned a heater the printer does not have")
+    for state in ("printing", "paused"):
+        expect(refuses(macros, "PID_TUNE_BED", printer_state(printing=state),
+                       params={"ZONE": "1"}),
+               "a bed PID run started while %s" % state)
+
+    # The one warning that decides whether the numbers mean anything.
+    text = "\n".join(render(macros, "_PID_TUNE_BED_WARN", printer_state()))
+    expect("mirror" in text.lower(),
+           "nothing warns that a heater_bed mirror ruins the calibration (%s)" % text)
+    text = "\n".join(render(macros, "_PID_TUNE_BED_WARN",
+                            printer_state(bed_zones_cfg=True)))
+    expect("bed-zones.cfg" in text,
+           "the warning does not name bed-zones.cfg when it is installed")
 
 
 def main(argv):

@@ -214,6 +214,44 @@ SAVE_VARIABLE VARIABLE=lube_print_hours VALUE=812.5
 Set `variable_show_dates: False` on `LUBE_STATUS` if you drop the two shell
 command sections; everything else keeps working without them.
 
+### PID_TUNE_BEDS / PID_TUNE_BED — the four bed zones
+
+The bed is one plate over four heaters: `heater_bed`, which Klipper owns, and
+`BED_VR`, `BED_HL` and `BED_HR` as `[heater_generic]` sections. Klipper tunes
+one heater at a time, so `PID_TUNE_BEDS` runs them in sequence and ends with
+**one** `SAVE_CONFIG` prompt. That is not cosmetic: each `PID_CALIBRATE` parks
+its result in Klipper's pending config (`heaters.py` → `save_profile` →
+`configfile.set`), so a single save writes all four and the printer restarts
+once instead of four times. A save between runs would restart mid-procedure and
+drop the rest.
+
+`PID_TUNE_BED ZONE=1..4` (or `ZONE=BED_HL`) tunes a single zone. `TEMP=`
+overrides the calibration temperature, `COOL_BELOW=0` skips the waiting.
+
+Two things decide whether the resulting numbers describe anything real:
+
+- **The plate is shared.** A zone tuned while its neighbours are hot is a
+  different thermal system than the same zone on a cold plate. Every run
+  therefore switches all four zones off and waits for the whole plate to fall
+  below `variable_cool_below` (40 °C) first. On a 600 plate that wait, not the
+  tuning, is the long part — budget hours for a full run.
+- **`PID_CALIBRATE` writes the heater's target directly.** If anything on the
+  machine mirrors `heater_bed` onto the other three — and something does, or
+  the zones would never heat together — it will copy the calibration onto the
+  whole plate, and the numbers then describe a different system. The macro says
+  so before every run, and names `bed-zones.cfg` if that file is installed.
+
+The zone names live in `variable_zones` on `PID_TUNE_BEDS` and any that the
+printer does not have are skipped, so this degrades to a plain one-heater bed
+without editing anything.
+
+One naming detail is load-bearing and easy to get backwards: `PID_CALIBRATE`
+and `SET_HEATER_TEMPERATURE` take the **bare** heater name (`BED_VR`), while
+`TEMPERATURE_WAIT` matches the **full section name** (`heater_generic BED_VR`)
+— `heaters.py` looks the first two up through `lookup_heater`, which strips a
+section prefix, and checks the third against `available_sensors`, which holds
+`config.get_name()`. Getting it wrong is an error hours into the procedure.
+
 ### What the two helpers are for
 
 `_MAINTENANCE_APPROACH` (bed, then gantry) and
@@ -231,15 +269,26 @@ mode read inline would be the pre-homing one.
 
 ### Installing it
 
-The file is **not** included by anything. Add
+**`600.cfg` includes it**, so on a machine running the 600 printer type the
+macros arrive with a configurator update and `printer.cfg` needs no edit at all.
+The relative path (`../v-core-4-1-idex-600/maintenance.cfg`) is what makes that
+work: Klipper resolves an include against the directory of the file containing
+it, and `600.cfg` is the one file of ours the shared template pulls in by
+itself. `build-configurator-fork.sh` checks that the path resolves in the
+shipped tree, because in this repo the two files sit in one directory and on the
+printer they do not.
+
+Having
 
 ```
 [include RatOS/printers/v-core-4-1-idex-600/maintenance.cfg]
 ```
 
-to `printer.cfg` below `[include RatOS.cfg]` — or, on a machine still running
-the hand-patched 500 config, paste the file's contents into `printer.cfg`, since
-that directory does not exist there yet.
+in `printer.cfg` as well is harmless — Klipper's include guard rejects only
+*recursive* includes (`configfile.py` drops the path from `visited` again after
+parsing), so the file is parsed twice with identical content. On a machine still
+running the hand-patched 500 config, neither path exists yet: paste the file's
+contents into `printer.cfg` instead.
 
 `tests/test_maintenance_macro.py` renders every macro with a stand-in for the
 600's printer object and checks the coordinates above, the move order, the

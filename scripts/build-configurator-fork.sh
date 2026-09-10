@@ -181,6 +181,20 @@ if [ -d "$P600" ]; then
 		die "the 600 size .cfg and its printer definition disagree"
 	[ -f "$P600/v-core-4-idex.png" ] ||
 		die "the 600 printer type has no image"
+
+	# 600.cfg pulls the service macros in by a relative path, which is how they
+	# reach the printer without an edit to printer.cfg. That path only resolves
+	# in the SHIPPED layout -- the two files sit in one directory in this repo
+	# and in two directories on the printer -- so it can only be checked here.
+	SIZE_CFG="$CHECKOUT/configuration/printers/v-core-4-1-idex/600.cfg"
+	while read -r spec; do
+		[ -n "$spec" ] || continue
+		target="$(dirname "$SIZE_CFG")/$spec"
+		[ -f "$target" ] ||
+			die "600.cfg includes '$spec', which does not exist in the shipped
+    tree ($target). Klipper would refuse to start."
+		note "600.cfg's include of '$spec' resolves"
+	done < <(sed -n 's/^\[include \(.*\)\]$/\1/p' "$SIZE_CFG")
 fi
 
 # --- the changelog a printer owner actually sees ---------------------------

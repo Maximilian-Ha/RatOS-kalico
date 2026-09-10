@@ -75,12 +75,17 @@ safe_distance: 60
 #                      save_variables; the calendar date comes from two shell
 #                      commands, because a macro cannot read a clock
 #   LUBE_MARK          records a greasing you did by hand (AXIS=X|Y|Z|ALL)
+#   PID_TUNE_BEDS      PID calibration for all four bed zones in sequence, with
+#                      the plate cooled between runs and ONE SAVE_CONFIG at the
+#                      end. PID_TUNE_BED ZONE=1..4 does a single zone
 #
-# They are not included by anything. Add this line to printer.cfg, below
-# [include RatOS.cfg]:
+# 600.cfg includes maintenance.cfg for you, so on the 600 printer type these
+# arrive with a configurator update and printer.cfg needs no edit. Adding
 #
 #     [include RatOS/printers/v-core-4-1-idex-600/maintenance.cfg]
 #
-# On a machine that is not on the 600 printer type yet, that path does not
-# exist -- paste the contents of maintenance.cfg into printer.cfg instead.
+# yourself is harmless (Klipper rejects only recursive includes), and is still
+# the way in if you keep your own copy of the file elsewhere. On a machine that
+# is not on the 600 printer type yet, neither path exists -- paste the contents
+# of maintenance.cfg into printer.cfg instead.
 #------------------------------------------------------------------------------------------------------------
