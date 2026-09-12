@@ -276,6 +276,21 @@ $BULLETS
 $KLIPPER_LINE
 Built from RatOS-kalico ${DEFINITION_SHA:0:12}, RatOS ${BASE:0:12}"
 
+# The watt display is two halves that fail silently apart: the extension file
+# in configuration/klippy, and its entry in ratos-common.sh's
+# expected_extensions. Without the entry the file is never symlinked and every
+# [temperature_sensor] using it stops the printer at boot; without the file the
+# registration resolves to an empty path.
+EXT="$CHECKOUT/configuration/klippy/heater_power.py"
+[ -f "$EXT" ] || die "heater_power.py was not shipped into configuration/klippy"
+grep -q 'klippy/heater_power.py' "$CHECKOUT/configuration/scripts/ratos-common.sh" ||
+	die "heater_power.py is shipped but not registered in expected_extensions --
+    RatOS would never symlink it, and the sensors referencing it would stop
+    the printer at boot"
+python3 "$REPO_ROOT/tests/test_heater_power.py" "$EXT" ||
+	die "the shipped heater_power.py does not behave"
+note "heater_power.py shipped, registered and behaving"
+
 say "Committing"
 # Stage everything the patcher touched. An explicit path list is how the numpy
 # pin silently failed to ship once already: the transform wrote the file, the

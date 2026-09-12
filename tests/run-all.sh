@@ -132,6 +132,14 @@ python3 "$SCRIPT_DIR/check_undefined_names.py" \
 	"$CONF/configuration/klippy/beacon_adaptive_heat_soak.py" ||
 	FAILED=1
 
+printf '\n--- heater power sensor ---\n'
+# The klippy extension behind the watt display. It runs on the printer, so the
+# ways it deliberately does not fail -- an unknown heater, a min/max it ignores
+# -- are behaviour worth pinning, not politeness.
+run "heater_power reports watts and cannot stop the printer" \
+	python3 "$SCRIPT_DIR/test_heater_power.py" \
+	"$CONF/configuration/klippy/heater_power.py"
+
 printf '\n--- service macros ---\n'
 # The service macros are Jinja templates Klippy renders in full before their
 # first line runs, so a typo in one is a config error at startup rather than a
