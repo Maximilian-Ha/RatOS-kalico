@@ -84,11 +84,17 @@ BED_ZONES = ["heater_bed", "BED_VR", "BED_HL", "BED_HR"]
 BED_TEMP = 80
 BED_COOL_BELOW = 40
 
+# Blowing the plate off: T0's part fan, at the printable area's full extent.
+BLOW_Z = 25.0
+BLOW_SPACING = 50.0
+BLOW_FAN = "part_fan_t0"
+BLOW_LINES = int(PRINTABLE_Y_MAX // BLOW_SPACING) + 1   # 0, 50, .. 600
+
 PUBLIC_MACROS = {
     "MAINTENANCE_MODE", "MAINTENANCE_END", "NOZZLE_CHANGE", "NOZZLE_CHANGE_END",
     "LUBE_X", "LUBE_Y", "LUBE_Z", "LUBE_NEXT", "LUBE_ABORT",
     "LUBE_STATUS", "LUBE_MARK",
-    "PID_TUNE_BEDS", "PID_TUNE_BED",
+    "PID_TUNE_BEDS", "PID_TUNE_BED", "BLOW_BED",
 }
 INTERNAL_MACROS = {
     "_MAINTENANCE_APPROACH", "_MAINTENANCE_POSITION_TOOLHEADS",
@@ -108,7 +114,8 @@ def printer_state(idex_mode="INACTIVE", homed="xyz", printing="standby",
                   hotend_temp=25.0, nozzle_change_tool=-1, filament=None,
                   lube_axis="", lube_stations=None, lube_travel=None,
                   saved=None, print_duration=0.0, unsaved=0.0,
-                  last_duration=0.0, bed_zones=None, bed_zones_cfg=False):
+                  last_duration=0.0, bed_zones=None, bed_zones_cfg=False,
+                  part_fans=(BLOW_FAN,)):
     """A stand-in for Klippy's `printer` object, with the 600's config.
 
     idex_mode is [dual_carriage].carriage_1 as Klippy reports it: INACTIVE when
@@ -186,6 +193,8 @@ def printer_state(idex_mode="INACTIVE", homed="xyz", printing="standby",
             state["heater_bed"] = {"temperature": 25.0, "target": 0.0}
         else:
             state["heater_generic %s" % zone] = {"temperature": 25.0, "target": 0.0}
+    for name in part_fans:
+        state["fan_generic %s" % name] = {"speed": 0.0}
     if bed_zones_cfg:
         # The unrelated bed-zones.cfg, which mirrors heater_bed onto the rest.
         state["gcode_macro _BED_ZONES"] = {"mode": "all"}
@@ -316,6 +325,7 @@ def check(path):
     check_bed_pid_all(macros, expect)
     check_bed_pid_zone(macros, expect)
     check_bed_pid_single(macros, expect)
+    check_blow_bed(macros, expect)
     return failures
 
 
@@ -985,6 +995,88 @@ def check_bed_pid_single(macros, expect):
            "the warning does not name bed-zones.cfg when it is installed")
 
 
+def check_blow_bed(macros, expect):
+    lines = render(macros, "BLOW_BED", printer_state())
+    text = "\n".join(lines)
+
+    i_home = index_of(lines, r"^MAYBE_HOME\b")
+    i_z = index_of(lines, r"^G0 Z")
+    i_fan_on = index_of(lines, r"^SET_FAN_SPEED FAN=%s SPEED=1" % BLOW_FAN)
+    expect(i_home < i_z < i_fan_on,
+           "order must be home, bed to sweep height, then the fan")
+    z = number_in(lines[i_z], r"G0 Z([-\d.]+)")
+    expect(abs(z - BLOW_Z) < 1e-6, "the plate is swept at Z%s, expected %s" % (z, BLOW_Z))
+
+    # The fan blows from the head that moves: carriage 0, selected explicitly
+    # rather than trusting whatever the machine thought was active.
+    selected = "SET_DUAL_CARRIAGE CARRIAGE=0" in lines
+    expect(selected,
+           "carriage 0 is not selected, so the moving head may not be the one "
+           "with the running fan")
+    expect(not selected or lines.index("SET_DUAL_CARRIAGE CARRIAGE=0") < i_fan_on,
+           "the fan starts before the sweeping head is selected")
+
+    # Fan up to speed before the first sweep move, and off at the end.
+    i_dwell = index_of(lines, r"^G4 P")
+    sweeps = [i for i, l in enumerate(lines) if re.match(r"^G0 [XY]", l) and i > i_fan_on]
+    expect(i_fan_on < i_dwell < min(sweeps),
+           "the fan gets no spin-up time before the sweep starts")
+    i_off = index_of(lines, r"^SET_FAN_SPEED FAN=%s SPEED=0\b" % BLOW_FAN)
+    expect(i_off > max(sweeps), "the fan is switched off before the sweep ends")
+
+    # One line per spacing step, covering the plate, ends alternating so every
+    # line is actually swept rather than travelled to.
+    ys = [number_in(l, r"G0 Y([-\d.]+)") for l in lines[i_fan_on:] if l.startswith("G0 Y")]
+    xs = [number_in(l, r"G0 X([-\d.]+)") for l in lines[i_fan_on:] if l.startswith("G0 X")]
+    expect(len(ys) == BLOW_LINES,
+           "%d sweep lines, expected %d at %smm spacing" % (len(ys), BLOW_LINES, BLOW_SPACING))
+    expect(ys[0] == 0.0 and abs(ys[-1] - PRINTABLE_Y_MAX) < 1e-6,
+           "the sweep runs Y%s..Y%s, expected the whole plate 0..%s"
+           % (ys[0], ys[-1], PRINTABLE_Y_MAX))
+    expect(all(abs((b - a) - BLOW_SPACING) < 1e-6 for a, b in zip(ys, ys[1:])),
+           "the sweep lines are not evenly spaced: %s" % ys)
+    expect(len(xs) == len(ys) and all(x != y for x, y in zip(xs, xs[1:])),
+           "consecutive lines sweep to the same end, so half of them are "
+           "travel rather than sweep: %s" % xs)
+    expect(set(xs) == {0.0, 600.0},
+           "the sweep does not reach both ends of the plate: %s" % set(xs))
+
+    # A second pass must not repeat the direction of the last line of the first.
+    lines2 = render(macros, "BLOW_BED", printer_state(), params={"PASSES": "2"})
+    xs2 = [number_in(l, r"G0 X([-\d.]+)") for l in lines2 if l.startswith("G0 X")]
+    xs2 = xs2[1:] if len(xs2) > 2 * BLOW_LINES else xs2   # drop the approach move
+    expect(len(xs2) == 2 * BLOW_LINES,
+           "PASSES=2 produced %d sweeps, expected %d" % (len(xs2), 2 * BLOW_LINES))
+    expect(all(x != y for x, y in zip(xs2, xs2[1:])),
+           "the second pass repeats the end the first one finished at, so its "
+           "first line is never swept: %s" % xs2)
+
+    # Overrides.
+    lines = render(macros, "BLOW_BED", printer_state(), params={"Z": "40", "SPACING": "100"})
+    expect(abs(number_in(lines[index_of(lines, r"^G0 Z")], r"G0 Z([-\d.]+)") - 40) < 1e-6,
+           "Z= was not used")
+    ys = [number_in(l, r"G0 Y([-\d.]+)") for l in lines if l.startswith("G0 Y")]
+    expect(len(ys) == int(PRINTABLE_Y_MAX // 100) + 1,
+           "SPACING=100 gave %d lines, expected %d" % (len(ys), int(PRINTABLE_Y_MAX // 100) + 1))
+
+    # A printer without that fan is told which variable to change, not left
+    # sweeping a cold plate with nothing blowing.
+    msg = refusal_message(macros, "BLOW_BED", printer_state(part_fans=()))
+    expect(msg is not None and "variable_fan" in msg,
+           "a missing part fan was not reported with the fix (%r)" % msg)
+
+    # A hot nozzle drips on what it is cleaning: worth saying, not refusing.
+    lines = render(macros, "BLOW_BED", printer_state(hotend_temp=210.0))
+    expect([l for l in lines if "WARNING" in l and "drip" in l.lower()],
+           "nothing warns that a hot nozzle drips on the plate")
+    expect([l for l in lines if l.startswith("G0 Y")],
+           "a hot nozzle stopped the sweep instead of warning about it")
+
+    for state in ("printing", "paused"):
+        expect(refuses(macros, "BLOW_BED", printer_state(printing=state)),
+               "BLOW_BED swept the plate while %s" % state)
+
+
 def main(argv):
     path = argv[1] if len(argv) > 1 else DEFAULT_CFG
     if not os.path.isfile(path):
@@ -999,8 +1091,8 @@ def main(argv):
         # What Klippy reports as a config error at startup.
         sys.stderr.write("FAIL: maintenance.cfg does not render: %s\n" % exc)
         return 1
-    except AssertionError as exc:
-        sys.stderr.write("FAIL: %s\n" % exc)
+    except (AssertionError, ValueError, KeyError, IndexError) as exc:
+        sys.stderr.write("FAIL: %s: %s\n" % (type(exc).__name__, exc))
         return 1
     if failures:
         for message in failures:

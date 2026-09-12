@@ -252,6 +252,34 @@ and `SET_HEATER_TEMPERATURE` take the **bare** heater name (`BED_VR`), while
 section prefix, and checks the third against `available_sensors`, which holds
 `config.get_name()`. Getting it wrong is an error hours into the procedure.
 
+### BLOW_BED — the plate, before the mesh
+
+T0 sweeps the plate at `Z25` with its part fan at full speed, in a serpentine
+one line per 50 mm of Y, to get dust and filament crumbs off. Run it **before
+the bed mesh and before the heat soak**: the mesh should measure the plate and
+not a crumb, and a soaked plate is one you no longer want to reach across.
+
+`Z=`, `SPACING=`, `SPEED=` and `PASSES=` override the defaults for one call.
+
+Three details are deliberate:
+
+- **The fan is addressed by name** (`SET_FAN_SPEED FAN=part_fan_t0`), not
+  through `M106`. `M106` routes to whichever toolhead RatOS considers active,
+  and the macro explicitly selects carriage 0 for the sweep — addressing the fan
+  by name is what guarantees the head that blows is the head that moves.
+- **The sweep direction alternates across the whole run, not per pass.**
+  Counting per pass would send the second pass's first line to the end the head
+  is already parked at, and that line would be travel rather than sweep.
+- **The area comes from the printable area**, not the axis limits. Past it is
+  frame, and blowing there only moves the dust onto the rails.
+
+A hot nozzle gets a warning rather than a refusal — it drips on the plate you
+are cleaning, but the cleaning still works. If the named fan does not exist the
+macro says which variable to change instead of sweeping with nothing running.
+
+It leaves T0 as the selected carriage, which is also where a fresh `G28` leaves
+the machine, so the mesh and the heat soak can follow directly.
+
 ### What the two helpers are for
 
 `_MAINTENANCE_APPROACH` (bed, then gantry) and

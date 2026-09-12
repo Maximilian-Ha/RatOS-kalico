@@ -78,6 +78,9 @@ safe_distance: 60
 #   PID_TUNE_BEDS      PID calibration for all four bed zones in sequence, with
 #                      the plate cooled between runs and ONE SAVE_CONFIG at the
 #                      end. PID_TUNE_BED ZONE=1..4 does a single zone
+#   BLOW_BED           T0 sweeps the plate at Z25 with its part fan at full
+#                      speed, to blow dust and crumbs off. Run it before the bed
+#                      mesh and before the heat soak
 #
 # 600.cfg includes maintenance.cfg for you, so on the 600 printer type these
 # arrive with a configurator update and printer.cfg needs no edit. Adding
