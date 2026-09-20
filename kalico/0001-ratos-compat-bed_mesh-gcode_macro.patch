@@ -423,6 +423,84 @@ index 37b27bab..686edd48 100644
    "numpy~=2.3.0 ; python_version>='3.14'",
    "pyserial==3.4",
    "python-can~=4.6",
+diff --git a/scripts/calibrate_shaper.py b/scripts/calibrate_shaper.py
+index 6a9bd44..2965988 100755
+--- a/scripts/calibrate_shaper.py
++++ b/scripts/calibrate_shaper.py
+@@ -10,6 +10,7 @@ from __future__ import print_function
+ import optparse
+ import pathlib
+ import sys
++import types
+ from textwrap import wrap
+ 
+ import matplotlib
+@@ -17,6 +18,26 @@ import numpy as np
+ 
+ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
+ 
++# RatOS-Kalico: import shaper_calibrate WITHOUT running klippy/__init__.py.
++#
++# That module is `from .printer import *`, so a plain
++# `from klippy.extras import shaper_calibrate` pulls in printer -> mcu ->
++# chelper -> `import cffi`. This script runs under the interpreter its shebang
++# names, i.e. the system python3, which has matplotlib and numpy but no cffi --
++# so on a stock RatOS image every belt-tension and input-shaper graph dies with
++# ModuleNotFoundError before it draws anything.
++#
++# Registering stub packages first means the import machinery finds `klippy` and
++# `klippy.extras` already in sys.modules and never executes their __init__,
++# while `from . import shaper_defs` inside shaper_calibrate still resolves
++# through the stub's __path__. Nothing but the analysis module gets loaded.
++_KLIPPY_ROOT = pathlib.Path(__file__).parent.parent
++for _name, _subdir in (("klippy", "klippy"), ("klippy.extras", "klippy/extras")):
++    if _name not in sys.modules:
++        _stub = types.ModuleType(_name)
++        _stub.__path__ = [str(_KLIPPY_ROOT / _subdir)]
++        sys.modules[_name] = _stub
++
+ from klippy.extras import shaper_calibrate
+ 
+ MAX_TITLE_LENGTH = 65
+diff --git a/scripts/graph_accelerometer.py b/scripts/graph_accelerometer.py
+index 7f607a3..2bc926f 100755
+--- a/scripts/graph_accelerometer.py
++++ b/scripts/graph_accelerometer.py
+@@ -9,6 +9,7 @@ import optparse
+ import os
+ import pathlib
+ import sys
++import types
+ from textwrap import wrap
+ 
+ import matplotlib
+@@ -16,6 +17,26 @@ import numpy as np
+ 
+ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
+ 
++# RatOS-Kalico: import shaper_calibrate WITHOUT running klippy/__init__.py.
++#
++# That module is `from .printer import *`, so a plain
++# `from klippy.extras import shaper_calibrate` pulls in printer -> mcu ->
++# chelper -> `import cffi`. This script runs under the interpreter its shebang
++# names, i.e. the system python3, which has matplotlib and numpy but no cffi --
++# so on a stock RatOS image every belt-tension and input-shaper graph dies with
++# ModuleNotFoundError before it draws anything.
++#
++# Registering stub packages first means the import machinery finds `klippy` and
++# `klippy.extras` already in sys.modules and never executes their __init__,
++# while `from . import shaper_defs` inside shaper_calibrate still resolves
++# through the stub's __path__. Nothing but the analysis module gets loaded.
++_KLIPPY_ROOT = pathlib.Path(__file__).parent.parent
++for _name, _subdir in (("klippy", "klippy"), ("klippy.extras", "klippy/extras")):
++    if _name not in sys.modules:
++        _stub = types.ModuleType(_name)
++        _stub.__path__ = [str(_KLIPPY_ROOT / _subdir)]
++        sys.modules[_name] = _stub
++
+ from klippy.extras import shaper_calibrate  # noqa:E402
+ 
+ MAX_TITLE_LENGTH = 65
 diff --git a/scripts/klippy-requirements.txt b/scripts/klippy-requirements.txt
 index 5854cf0f..bddcb29c 100644
 --- a/scripts/klippy-requirements.txt

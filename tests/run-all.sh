@@ -82,6 +82,31 @@ fi
 
 # --- 3b. heat soak: the operator can see it working ------------------------
 
+# --- the graph scripts must not drag the printer stack in ------------------
+# RatOS invokes these by path, so they run under their shebang's python3 -- the
+# system one, which has matplotlib and numpy but no cffi. Kalico's package
+# __init__ would pull printer -> mcu -> chelper -> cffi and kill every graph.
+run "graph scripts import without the printer stack" \
+	python3 "$SCRIPT_DIR/test_graph_script_import.py" \
+	"$KALICO/scripts/graph_accelerometer.py" \
+	"$KALICO/scripts/calibrate_shaper.py"
+
+PRISTINE_GRAPH="$WORK_DIR/graph_accelerometer.pristine.py"
+mkdir -p "$WORK_DIR/pristine-graph/scripts"
+ln -sfn "$KALICO/klippy" "$WORK_DIR/pristine-graph/klippy"
+git -C "$KALICO" show "HEAD~1:scripts/graph_accelerometer.py" \
+	>"$WORK_DIR/pristine-graph/scripts/graph_accelerometer.py"
+cp "$WORK_DIR/pristine-graph/scripts/graph_accelerometer.py" "$PRISTINE_GRAPH"
+printf '\n--- control: pristine graph script must NOT import cleanly ---\n'
+if python3 "$SCRIPT_DIR/test_graph_script_import.py" \
+	"$WORK_DIR/pristine-graph/scripts/graph_accelerometer.py" >/dev/null 2>&1; then
+	printf '!!! FAILED: unpatched graph_accelerometer.py imported without the printer stack.\n'
+	printf '    Either Kalico changed its package layout or the test stopped measuring.\n'
+	FAILED=1
+else
+	printf 'ok: unpatched graph script fails as expected\n'
+fi
+
 SOAK="$CONF/configuration/klippy/beacon_adaptive_heat_soak.py"
 run "patched heat soak reports to the console" \
 	python3 "$SCRIPT_DIR/test_heat_soak_report.py" "$SOAK"
