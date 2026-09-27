@@ -44,29 +44,48 @@ With `--push`, both build scripts refuse — before building anything — unless
 | the tree is clean, untracked files included | the build reads the working tree, but the result is labelled with HEAD |
 | HEAD is exactly what origin has | a commit only one machine has cannot be merged, diffed or rolled back to by anyone else |
 | the live build names a RatOS-kalico commit that HEAD contains | otherwise publishing discards something printers already run |
+| *(configurator only)* the Kalico commit it pins was built here, from the firmware patch in HEAD | otherwise firmware goes out under a label it does not match |
 
-The last check reads the `RatOS-Kalico-Definition` trailer of the configurator
-build that is currently published (see "The changelog the printer shows") and
-requires that commit to be HEAD or an ancestor of it. It is what still holds
-when someone *did* publish from elsewhere — with an older script, or by hand.
-The Kalico build runs it too, although it does not touch the configurator: the
-next configurator build pins whatever the Kalico build pushes. And the
-configurator's push is leased on exactly the tip it checked, so a publish that
-lands in the middle of a build makes the push fail instead of being overwritten.
+The fourth check reads the `RatOS-Kalico-Definition` trailer of the
+configurator build that is currently published (see "The changelog the printer
+shows") and requires that commit to be HEAD or an ancestor of it. It is what
+still holds when someone *did* publish from elsewhere — with an older script,
+or by hand. The Kalico build runs it too, although it does not touch the
+configurator: the next configurator build pins whatever the Kalico build
+pushes. For the last check, `build-kalico-fork.sh` records in
+`.work/kalico-built-from.txt` which patch each build applied.
+
+A build takes minutes, and everything checked at the start can change in that
+time. So right before pushing, each script checks again that HEAD has not
+moved and that nobody has published the configurator since. Both pushes are
+also leased on the exact tips read at the start — the configurator branch, the
+Kalico branch and its recovery alias — so a publish that lands mid-build makes
+the push fail instead of vanishing under it.
 
 When it refuses because the live build came from another branch, the message
 names the commit and how to find the branch that has it. Merge that branch into
 develop, push, publish again — which is exactly what repairing the
 power-sensors incident took. `--allow-rollback` skips that one check, for the
-rare case where discarding what is live really is the point. Nothing skips the
-other three.
+rare case where discarding what is live really is the point, and only as a
+flag: an exported `ALLOW_ROLLBACK` is ignored. Nothing skips the others.
 
 **What this cannot stop.** The guard lives in the scripts, so it binds only
 checkouts that have it. A branch that split off before it carries the old
 scripts and can still publish unchecked. Do not run `--push` from such a branch;
-merge its work into develop instead. `tests/test_publish_guard.sh` exercises
-every check against throwaway repositories, needs no network, and runs first in
-`tests/run-all.sh`.
+merge its work into develop instead.
+
+**How it is tested.** `tests/test_publish_guard.sh` checks each condition
+against throwaway repositories, without network. `tests/test_publish_rehearsal.sh`
+runs both build scripts for real, with `--push`, against local stand-ins for
+every repository involved, and has a second publisher push in the middle of a
+build. Both run in `tests/run-all.sh`.
+
+**One thing that is not reproducible across machines.** The Kalico commit is a
+pure function of base and patch only on one machine: a git configured to sign
+commits (`commit.gpgsign`) writes the signature into the commit. The cloud
+sessions that published so far sign. A build from a machine that does not sign
+produces the same tree under a different commit, which printers are offered as
+a firmware update with nothing in it.
 
 ---
 

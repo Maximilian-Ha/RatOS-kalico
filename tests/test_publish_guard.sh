@@ -60,6 +60,11 @@ with_rollback() {
 	export ALLOW_ROLLBACK=1
 	guard "$@"
 }
+with_workdir() {
+	export WORK_DIR="$1"
+	shift
+	guard "$@"
+}
 
 # expect allow|refuse <label> <needle> <command...>
 #
@@ -127,6 +132,16 @@ expect refuse "a feature branch" "branch 'feature'" guard "$R" require_publish_a
 R="$(fresh main)"
 git -C "$R" checkout --quiet -B main origin/main
 expect refuse "main, which is updated by pull request only" "branch 'main'" guard "$R" require_publish_allowed
+
+R="$(fresh tagged)"
+git -C "$R" tag develop
+expect allow "develop, with a tag of the same name" "" guard "$R" require_publish_allowed
+
+R="$(fresh hidden-untracked)"
+git -C "$R" config status.showUntrackedFiles no
+printf 'new\n' >"$R/power-sensors.cfg"
+expect refuse "an untracked file, with status.showUntrackedFiles=no" "power-sensors.cfg" \
+	guard "$R" require_publish_allowed
 
 R="$(fresh detached)"
 git -C "$R" checkout --quiet --detach
@@ -230,6 +245,39 @@ got="$(with_conf "file://$TMP/empty-origin.git" "$R" eval \
 expect refuse "an unreachable fork is not 'nothing published'" "cannot reach" \
 	with_conf "file://$TMP/nowhere.git" "$R" read_live_configurator_build
 
+printf '\n--- the firmware pinned must come from HEAD ---\n'
+
+P="$(fresh provenance)"
+mkdir -p "$P/kalico"
+printf 'the patch\n' >"$P/kalico/0001-ratos-compat-bed_mesh-gcode_macro.patch"
+git -C "$P" add kalico && git -C "$P" commit --quiet -m "patch" && git -C "$P" push --quiet origin develop
+PATCH_BLOB="$(git -C "$P" rev-parse HEAD:kalico/0001-ratos-compat-bed_mesh-gcode_macro.patch)"
+K=1111111111111111111111111111111111111111
+mkdir -p "$TMP/wd-none" "$TMP/wd-other" "$TMP/wd-stale" "$TMP/wd-good"
+printf '%s %s\n' 2222222222222222222222222222222222222222 "$PATCH_BLOB" >"$TMP/wd-other/kalico-built-from.txt"
+printf '%s %s\n' "$K" "$(printf 'an older patch\n' | git hash-object --stdin)" >"$TMP/wd-stale/kalico-built-from.txt"
+printf '%s %s\n' "$K" "$PATCH_BLOB" >"$TMP/wd-good/kalico-built-from.txt"
+expect refuse "no record of the Kalico build" "no record of which patch" \
+	with_workdir "$TMP/wd-none" "$P" require_kalico_built_from_head "$K"
+expect refuse "a Kalico commit other than the one built here" "the last Kalico build here produced" \
+	with_workdir "$TMP/wd-other" "$P" require_kalico_built_from_head "$K"
+expect refuse "a Kalico commit built from an older patch" "built from a different" \
+	with_workdir "$TMP/wd-stale" "$P" require_kalico_built_from_head "$K"
+expect allow "the Kalico commit built here from HEAD's patch" "built from HEAD's patch" \
+	with_workdir "$TMP/wd-good" "$P" require_kalico_built_from_head "$K"
+
+printf '\n--- checked again right before the push ---\n'
+
+HEAD_P="$(git -C "$P" rev-parse HEAD)"
+expect allow "nothing changed during the build" "" \
+	with_conf "file://$TMP/conf.git" "$P" recheck_before_push "$HEAD_P" "$LIVE"
+expect refuse "HEAD moved during the build" "HEAD moved during the build" \
+	with_conf "file://$TMP/conf.git" "$P" recheck_before_push "$A" "$LIVE"
+expect refuse "someone published during the build" "published v2.1.x-kalico during this build" \
+	with_conf "file://$TMP/conf.git" "$P" recheck_before_push "$HEAD_P" "$TIP"
+expect refuse "...including a first publish" "published v2.1.x-kalico during this build" \
+	with_conf "file://$TMP/conf.git" "$P" recheck_before_push "$HEAD_P" ""
+
 printf '\n--- the lease the configurator push relies on ---\n'
 
 # The push names the tip it checked. Git must refuse it when the branch has
@@ -257,6 +305,8 @@ fi
 
 printf '\n--- the build scripts refuse before they build ---\n'
 
+git init --quiet --bare "$TMP/fork-kalico-empty.git"
+
 # A copy of this repository as a fixture: its own origin, its fork.conf pointed
 # at local repositories, so nothing here can reach -- let alone push to -- the
 # real forks.
@@ -267,7 +317,7 @@ make_copy() { # make_copy <name> <branch>
 	printf '.work/\n__pycache__/\n' >"$d/.gitignore"
 	sed -i \
 		-e "s|^FORK_CONFIGURATOR_URL=.*|FORK_CONFIGURATOR_URL=\"file://$TMP/conf.git\"|" \
-		-e "s|^FORK_KALICO_URL=.*|FORK_KALICO_URL=\"file://$TMP/nowhere-kalico.git\"|" \
+		-e "s|^FORK_KALICO_URL=.*|FORK_KALICO_URL=\"file://$TMP/fork-kalico-empty.git\"|" \
 		-e "s|^UPSTREAM_KALICO_URL=.*|UPSTREAM_KALICO_URL=\"file://$TMP/nowhere-upstream.git\"|" \
 		-e "s|^UPSTREAM_CONFIGURATOR_URL=.*|UPSTREAM_CONFIGURATOR_URL=\"file://$TMP/nowhere-upstream.git\"|" \
 		"$d/fork.conf"
@@ -335,24 +385,16 @@ past_guard "building without --push is not guarded" ""
 git -C "$D" checkout --quiet -b some-feature
 past_guard "...not even on a feature branch" ""
 
-# The configurator's live-build check sits deep in the build, after the
-# upstream fetch and the transforms, so it cannot be reached here without the
-# network. Check its placement instead: after the trailer is read, before
-# --changelog-since may replace it, and with the push leased on the same tip.
-CONF_SCRIPT="$SRC/scripts/build-configurator-fork.sh"
-# A missing line must reach the verdict below as "", not end the test here.
-line() { grep -n -m1 -F -- "$1" "$CONF_SCRIPT" | cut -d: -f1 || true; }
-read_at="$(line 'PREV_DEFINITION="$(printf')"
-check_at="$(line 'require_descends_from_live "$LIVE_TIP" "$PREV_DEFINITION"')"
-override_at="$(line 'if [ -n "$CHANGELOG_SINCE" ]; then')"
-push_at="$(line '--force-with-lease="refs/heads/$FORK_CONFIGURATOR_BRANCH:$LIVE_TIP"')"
-if [ -n "$read_at" ] && [ -n "$check_at" ] && [ -n "$override_at" ] && [ -n "$push_at" ] &&
-	[ "$read_at" -lt "$check_at" ] && [ "$check_at" -lt "$override_at" ] &&
-	[ "$override_at" -lt "$push_at" ]; then
-	ok "configurator: live check after the trailer, before --changelog-since, lease on the checked tip"
-else
-	fail "configurator: live check misplaced (read=$read_at check=$check_at override=$override_at push=$push_at)"
-fi
+# The configurator runs the same checks, before it builds anything.
+git -C "$D" checkout --quiet "$REAL_PUBLISH_BRANCH"
+expect refuse "build-configurator-fork.sh --push over a live build HEAD lacks" \
+	"in the history of HEAD" \
+	env WORK_DIR="$TMP/work-conf-live" "$D/scripts/build-configurator-fork.sh" --push --kalico-commit "$A"
+[ ! -e "$TMP/work-conf-live/configurator" ] || fail "build-configurator-fork.sh fetched upstream before refusing"
+expect refuse "...and ignores an exported ALLOW_ROLLBACK=1 as well" "in the history of HEAD" \
+	env ALLOW_ROLLBACK=1 WORK_DIR="$TMP/work-conf-env" "$D/scripts/build-configurator-fork.sh" --push --kalico-commit "$A"
+expect refuse "...while --allow-rollback gets it to the firmware check" "no record of which patch" \
+	env WORK_DIR="$TMP/work-conf-rb" "$D/scripts/build-configurator-fork.sh" --push --allow-rollback --kalico-commit "$A"
 
 printf '\n'
 if [ "$FAILED" -eq 0 ]; then

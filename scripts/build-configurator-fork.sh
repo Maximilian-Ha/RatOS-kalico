@@ -73,12 +73,16 @@ need git
 need python3
 ensure_work_dir
 
-# Refuse a publish before spending time on a build that may not go out. Whether
-# the live build is contained in HEAD is checked further down, where the fork
-# is fetched anyway.
+# Refuse a publish before spending time on a build that may not go out. What is
+# checked here is also what the push is held to at the end: HEAD, and the live
+# build, which the push is leased on.
 if [ "$PUSH" -eq 1 ]; then
 	say "Checking this checkout may publish"
 	require_publish_allowed
+	read_live_configurator_build
+	require_descends_from_live "$LIVE_TIP" "$LIVE_DEFINITION" "$FORK_CONFIGURATOR_BRANCH"
+	START_HEAD="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+	START_LIVE_TIP="$LIVE_TIP"
 fi
 
 if [ -z "$KALICO_COMMIT" ]; then
@@ -88,6 +92,9 @@ if [ -z "$KALICO_COMMIT" ]; then
 	KALICO_COMMIT="$(cat "$WORK_DIR/kalico-commit.txt")"
 fi
 say "Pinning klipper to $KALICO_COMMIT"
+if [ "$PUSH" -eq 1 ]; then
+	require_kalico_built_from_head "$KALICO_COMMIT"
+fi
 
 # The pinned commit MUST already be published, or the printer is pointed at a
 # commit that does not exist: klipper-fork-migration.sh's `git cat-file -e`
@@ -130,6 +137,21 @@ git -C "$CHECKOUT" clean --quiet -ffdx -- configuration .github
 # leaves __pycache__ behind, which `add -u` does not stage and the commit
 # guard then rejects. Clean exactly that, by pathspec.
 git -C "$CHECKOUT" clean --quiet -ffdx -- 'src/**/__pycache__'
+
+# What is published now: the changelog below starts from it. Read before the
+# checkout is modified, because a refusal after that point leaves it dirty and
+# the next run would stop at ensure_checkout until someone cleans it up.
+ensure_fork_remote "$CHECKOUT" "$FORK_CONFIGURATOR_URL"
+FETCHED_TIP="$(git -C "$CHECKOUT" rev-parse --quiet --verify \
+	"refs/remotes/fork/$FORK_CONFIGURATOR_BRANCH" || true)"
+# A publish's changelog must describe what it replaces -- the build checked at
+# the start, which the push is leased on. ensure_fork_remote does not fail when
+# the fetch does, so a stale ref here is possible, as is a publish since.
+if [ "$PUSH" -eq 1 ] && [ "$FETCHED_TIP" != "$START_LIVE_TIP" ]; then
+	die "the published $FORK_CONFIGURATOR_BRANCH is not the build checked at the start
+    (checked '${START_LIVE_TIP:0:12}', fetched '${FETCHED_TIP:0:12}'): someone
+    published in the meantime, or fetching the fork failed. Run it again."
+fi
 
 say "Applying the Kalico delta"
 python3 "$REPO_ROOT/configurator/patch_configurator.py" \
@@ -228,23 +250,12 @@ fi
 # wrote into that build's message. If that commit is unknown -- a first build,
 # or a checkout without it -- say so rather than printing a changelog that
 # might be wrong. A changelog nobody can trust is worse than none.
-ensure_fork_remote "$CHECKOUT" "$FORK_CONFIGURATOR_URL"
 DEFINITION_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-# LIVE_TIP is also the push's lease, so the build that the changelog and the
-# check below were computed against is the only one this push may replace.
-LIVE_TIP="$(git -C "$CHECKOUT" rev-parse --quiet --verify \
-	"refs/remotes/fork/$FORK_CONFIGURATOR_BRANCH" || true)"
 PREV_MESSAGE=""
-if [ -n "$LIVE_TIP" ]; then
-	PREV_MESSAGE="$(git -C "$CHECKOUT" log -1 --format=%B "$LIVE_TIP")"
+if [ -n "$FETCHED_TIP" ]; then
+	PREV_MESSAGE="$(git -C "$CHECKOUT" log -1 --format=%B "$FETCHED_TIP")"
 fi
 PREV_DEFINITION="$(printf '%s\n' "$PREV_MESSAGE" | definition_trailer)"
-
-# Before --changelog-since can replace PREV_DEFINITION: this is about what is
-# live, not about where the changelog starts.
-if [ "$PUSH" -eq 1 ]; then
-	require_descends_from_live "$LIVE_TIP" "$PREV_DEFINITION" "$FORK_CONFIGURATOR_BRANCH"
-fi
 PREV_KALICO="$(printf '%s\n' "$PREV_MESSAGE" |
 	sed -n 's/^Klipper pinned to \([0-9a-f]\{40\}\).*$/\1/p' | head -1)"
 
@@ -395,18 +406,17 @@ python3 "$REPO_ROOT/tests/test_changelog_message.py" "$CHECKOUT" \
 CONFIGURATOR_COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"
 
 if [ "$PUSH" -eq 1 ]; then
-	# Again, now: the trailer names DEFINITION_SHA, so HEAD must not have moved
-	# during the build, and must still be what origin has.
-	require_publish_allowed
-	[ "$(git -C "$REPO_ROOT" rev-parse HEAD)" = "$DEFINITION_SHA" ] ||
+	# The trailer names DEFINITION_SHA, so that is what HEAD must still be.
+	[ "$DEFINITION_SHA" = "$START_HEAD" ] ||
 		die "HEAD moved during the build; the result would be labelled with the wrong commit. Run it again."
+	recheck_before_push "$START_HEAD" "$START_LIVE_TIP"
 	say "Pushing to $FORK_CONFIGURATOR_URL"
 	# The lease is explicit: the push goes through only if the branch is still
-	# at LIVE_TIP, the build checked above (or absent, if it was). Deriving it
-	# from a remote-tracking ref instead would take whatever the latest fetch
-	# saw, and a publish that landed in between would be overwritten unseen.
+	# at the build checked at the start (or absent, if it was). A lease derived
+	# from a remote-tracking ref would take whatever the latest fetch saw, and a
+	# publish that landed in between would be overwritten unseen.
 	git -C "$CHECKOUT" push \
-		--force-with-lease="refs/heads/$FORK_CONFIGURATOR_BRANCH:$LIVE_TIP" fork \
+		--force-with-lease="refs/heads/$FORK_CONFIGURATOR_BRANCH:$START_LIVE_TIP" fork \
 		"$FORK_CONFIGURATOR_BRANCH:$FORK_CONFIGURATOR_BRANCH"
 	note "pushed $FORK_CONFIGURATOR_BRANCH"
 	warn "This is the SOURCE branch. Moonraker pulls"

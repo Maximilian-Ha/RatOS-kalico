@@ -55,14 +55,21 @@ ensure_work_dir
 # configurator: the configurator's next build pins whatever this pushes, and
 # pushing from a line that lacks the live configurator build would move the
 # firmware out from under the pin that build set.
+#
+# What is checked here is also what the push is held to at the end: HEAD, the
+# live configurator build, and the two fork branches, leased on their tips now.
 if [ "$PUSH" -eq 1 ]; then
 	say "Checking this checkout may publish"
 	require_publish_allowed
 	read_live_configurator_build
 	require_descends_from_live "$LIVE_TIP" "$LIVE_DEFINITION" "$FORK_CONFIGURATOR_BRANCH"
+	START_HEAD="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+	START_LIVE_TIP="$LIVE_TIP"
+	START_KALICO_TIP="$(remote_branch_tip "$FORK_KALICO_URL" "$FORK_KALICO_BRANCH")"
+	START_RECOVERY_TIP="$(remote_branch_tip "$FORK_KALICO_URL" "$FORK_KALICO_RECOVERY_BRANCH")"
 fi
 
-PATCH="$REPO_ROOT/kalico/0001-ratos-compat-bed_mesh-gcode_macro.patch"
+PATCH="$REPO_ROOT/$KALICO_PATCH_REL"
 [ -f "$PATCH" ] || die "missing $PATCH"
 
 CHECKOUT="$WORK_DIR/kalico"
@@ -203,17 +210,24 @@ git -C "$CHECKOUT" branch --quiet -f "$FORK_KALICO_RECOVERY_BRANCH" "$KALICO_COM
 
 mkdir -p "$WORK_DIR"
 printf '%s\n' "$KALICO_COMMIT" >"$WORK_DIR/kalico-commit.txt"
+# Which patch produced it, for build-configurator-fork.sh --push: it must not
+# pin firmware under the name of a HEAD whose patch is a different one.
+printf '%s %s\n' "$KALICO_COMMIT" "$(git hash-object "$PATCH")" >"$WORK_DIR/kalico-built-from.txt"
 
 if [ "$PUSH" -eq 1 ]; then
-	# Again, now: the build read this checkout, so it must still be the commit
-	# that was checked -- and still what origin has.
-	require_publish_allowed
+	recheck_before_push "$START_HEAD" "$START_LIVE_TIP"
 	say "Pushing to $FORK_KALICO_URL"
-	# Via a named remote, so --force-with-lease has a remote-tracking ref to
-	# derive its lease from. --atomic keeps a rejected lease from leaving the
-	# recovery branch pointing somewhere the tracked branch does not.
+	# Both leases are explicit, on the tips read before the build: a publish
+	# that landed since makes this push fail instead of vanishing under it. A
+	# lease derived from a remote-tracking ref would take whatever the latest
+	# fetch saw -- and ensure_fork_remote fetches right here. --atomic keeps a
+	# rejected lease from leaving the recovery branch pointing somewhere the
+	# tracked branch does not.
 	ensure_fork_remote "$CHECKOUT" "$FORK_KALICO_URL"
-	git -C "$CHECKOUT" push --atomic --force-with-lease fork \
+	git -C "$CHECKOUT" push --atomic \
+		--force-with-lease="refs/heads/$FORK_KALICO_BRANCH:$START_KALICO_TIP" \
+		--force-with-lease="refs/heads/$FORK_KALICO_RECOVERY_BRANCH:$START_RECOVERY_TIP" \
+		fork \
 		"$FORK_KALICO_BRANCH:$FORK_KALICO_BRANCH" \
 		"$FORK_KALICO_RECOVERY_BRANCH:$FORK_KALICO_RECOVERY_BRANCH"
 	note "pushed $FORK_KALICO_BRANCH and $FORK_KALICO_RECOVERY_BRANCH"

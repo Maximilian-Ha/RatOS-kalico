@@ -14,6 +14,10 @@ source "$REPO_ROOT/fork.conf"
 
 WORK_DIR="${WORK_DIR:-$REPO_ROOT/.work}"
 
+# The firmware delta, relative to REPO_ROOT. build-kalico-fork.sh applies it;
+# build-configurator-fork.sh checks the Kalico commit it pins came from it.
+KALICO_PATCH_REL="kalico/0001-ratos-compat-bed_mesh-gcode_macro.patch"
+
 # Not created on source: preflight.sh runs on the printer and promises to
 # change nothing. The build scripts create it themselves.
 ensure_work_dir() { mkdir -p "$WORK_DIR"; }
@@ -94,7 +98,8 @@ ensure_fork_remote() {
 		git -C "$dir" remote add fork "$url"
 	fi
 	# A brand new fork repository has no refs yet; that is not an error.
-	git -C "$dir" fetch --quiet fork 2>/dev/null || true
+	# --prune: a branch deleted on the fork must not linger here as if live.
+	git -C "$dir" fetch --quiet --prune fork 2>/dev/null || true
 }
 
 # confirm <prompt>
@@ -127,21 +132,25 @@ confirm() {
 # the first: the build names HEAD in what it publishes, and a commit only this
 # machine has is one nobody else can merge, diff or roll back to.
 require_publish_allowed() {
-	local branch listing remote_tip head
+	local ref listing remote_tip head
 
-	branch="$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-	if [ "$branch" != "$PUBLISH_BRANCH" ]; then
+	# The full ref, not --short: a tag or remote branch of the same name makes
+	# --short answer "heads/<name>" and would refuse the right branch.
+	ref="$(git -C "$REPO_ROOT" symbolic-ref --quiet HEAD 2>/dev/null || true)"
+	if [ "$ref" != "refs/heads/$PUBLISH_BRANCH" ]; then
 		die "only '$PUBLISH_BRANCH' may publish, and this checkout is on
-    $(if [ -n "$branch" ]; then printf "branch '%s'" "$branch"; else printf 'a detached HEAD'; fi).
+    $(if [ -n "$ref" ]; then printf "branch '%s'" "${ref#refs/heads/}"; else printf 'a detached HEAD'; fi).
     Everything that reaches a printer goes through that one branch: merge this
     work into it, push, and publish from there. Building without --push works
     from any branch. See docs/MAINTENANCE.md, 'Who may publish'."
 	fi
 
-	if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
+	# --untracked-files=all overrides status.showUntrackedFiles=no, which would
+	# otherwise hide exactly the file a build reads and HEAD does not have.
+	if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)" ]; then
 		die "this checkout has uncommitted or untracked changes. A publish is built
     from the working tree but labelled with HEAD, so it has to be clean:
-$(git -C "$REPO_ROOT" status --short | sed 's/^/        /')"
+$(git -C "$REPO_ROOT" status --short --untracked-files=all | sed 's/^/        /')"
 	fi
 
 	listing="$(git -C "$REPO_ROOT" ls-remote origin "refs/heads/$PUBLISH_BRANCH")" ||
@@ -249,4 +258,65 @@ $holders}
     To find it:  git fetch origin && git branch -r --contains $live
     Merge that into $PUBLISH_BRANCH, push, and publish again. Only if throwing
     away what is live is really what you want: --allow-rollback.$shallow_hint"
+}
+
+# remote_branch_tip <url> <branch>
+#
+# Print the commit <branch> is at on <url>, or nothing if it does not exist.
+# An unreachable remote is an error, never "does not exist".
+remote_branch_tip() {
+	local listing
+	listing="$(git ls-remote "$1" "refs/heads/$2")" ||
+		die "cannot reach $1 to read $2"
+	printf '%s' "${listing%%[[:space:]]*}"
+}
+
+# require_kalico_built_from_head <kalico-commit>
+#
+# A configurator publish pins <kalico-commit> and is labelled with HEAD, so that
+# commit has to be what HEAD's firmware patch produces -- not a build from before
+# the last pull, and not one somebody else published. build-kalico-fork.sh
+# records which patch each build applied; compare that with the patch in HEAD.
+require_kalico_built_from_head() {
+	local want="$1" record="$WORK_DIR/kalico-built-from.txt" built="" patch="" head_patch
+	if [ ! -f "$record" ]; then
+		die "there is no record of which patch Kalico $want was built from.
+    Run scripts/build-kalico-fork.sh first (with --push if what it builds is
+    not published yet); it records that, and --kalico-commit cannot."
+	fi
+	read -r built patch <"$record" || true
+	if [ "$built" != "$want" ]; then
+		die "this would pin Kalico ${want:0:12}, but the last Kalico build here produced
+    ${built:0:12}. Only a commit built here from HEAD's patch can be pinned under
+    HEAD's name. Run scripts/build-kalico-fork.sh (--push if needed) first."
+	fi
+	head_patch="$(git -C "$REPO_ROOT" rev-parse --verify --quiet "HEAD:$KALICO_PATCH_REL")" ||
+		die "HEAD has no $KALICO_PATCH_REL"
+	if [ "$patch" != "$head_patch" ]; then
+		die "Kalico ${want:0:12} was built from a different $KALICO_PATCH_REL than the
+    one in HEAD, so the firmware would go out under a label it does not match.
+    Run scripts/build-kalico-fork.sh --push from here first."
+	fi
+	note "Kalico ${want:0:12} was built from HEAD's patch"
+}
+
+# recheck_before_push <head-at-start> <live-tip-at-start>
+#
+# A build takes minutes and everything it checked at the start can change in
+# that time: a pull moves HEAD, someone else publishes. Check again, last thing
+# before the push. The pushes are additionally leased on what was checked; this
+# is what turns the rarer cases into a clear refusal instead of a raw "stale
+# info" from git, and what covers the configurator build for the Kalico push,
+# which no lease of its own can.
+recheck_before_push() {
+	local start_head="$1" start_live="$2"
+	require_publish_allowed
+	[ "$(git -C "$REPO_ROOT" rev-parse HEAD)" = "$start_head" ] ||
+		die "HEAD moved during the build (it started at ${start_head:0:12}). What was
+    built is not what HEAD is; run it again."
+	read_live_configurator_build
+	[ "$LIVE_TIP" = "$start_live" ] ||
+		die "someone published $FORK_CONFIGURATOR_BRANCH during this build (it was at
+    '${start_live:0:12}', it is now at '${LIVE_TIP:0:12}'). Nothing was pushed.
+    Run it again; the check at the start will say whether that is safe."
 }

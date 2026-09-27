@@ -59,6 +59,14 @@ note "configurator fork built"
 KALICO="$WORK_DIR/kalico"
 CONF="$WORK_DIR/configurator"
 
+# --- 1b. publishing, rehearsed ----------------------------------------------
+#
+# Both build scripts, for real and with --push, against local stand-ins that
+# borrow the checkouts just built -- including a second publisher mid-build.
+
+run "publishing, rehearsed against local stand-ins" \
+	"$SCRIPT_DIR/test_publish_rehearsal.sh" "$KALICO" "$CONF"
+
 # --- 2. bed_mesh: the mesh must be unchanged -------------------------------
 
 PRISTINE_MESH="$WORK_DIR/bed_mesh.pristine.py"
