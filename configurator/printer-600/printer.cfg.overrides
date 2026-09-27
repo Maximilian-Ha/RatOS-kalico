@@ -66,12 +66,29 @@ safe_distance: 60
 #   NOZZLE_CHANGE      presents one nozzle 200mm in from its parking position
 #                      (T0 X127 / T1 X473) at 300C, with a 15 minute timeout
 #   NOZZLE_CHANGE_END  heater off, timeout cancelled
+#   LUBE_X/Y/Z         guided greasing: three stations per axis to apply grease
+#                      at, then sweeps to spread it. Continue with the dialog's
+#                      button or by typing LUBE_NEXT; LUBE_ABORT drops the run.
+#                      Stations are derived from the axis limits, not hardcoded
+#   LUBE_STATUS        when each axis was last greased and how many PRINT hours
+#                      ago. The hours are counted by a delayed_gcode and kept in
+#                      save_variables; the calendar date comes from two shell
+#                      commands, because a macro cannot read a clock
+#   LUBE_MARK          records a greasing you did by hand (AXIS=X|Y|Z|ALL)
+#   PID_TUNE_BEDS      PID calibration for all four bed zones in sequence, with
+#                      the plate cooled between runs and ONE SAVE_CONFIG at the
+#                      end. PID_TUNE_BED ZONE=1..4 does a single zone
+#   BLOW_BED           T0 sweeps the plate at Z25 with its part fan at full
+#                      speed, to blow dust and crumbs off. Run it before the bed
+#                      mesh and before the heat soak
 #
-# They are not included by anything. Add this line to printer.cfg, below
-# [include RatOS.cfg]:
+# 600.cfg includes maintenance.cfg for you, so on the 600 printer type these
+# arrive with a configurator update and printer.cfg needs no edit. Adding
 #
 #     [include RatOS/printers/v-core-4-1-idex-600/maintenance.cfg]
 #
-# On a machine that is not on the 600 printer type yet, that path does not
-# exist -- paste the contents of maintenance.cfg into printer.cfg instead.
+# yourself is harmless (Klipper rejects only recursive includes), and is still
+# the way in if you keep your own copy of the file elsewhere. On a machine that
+# is not on the 600 printer type yet, neither path exists -- paste the contents
+# of maintenance.cfg into printer.cfg instead.
 #------------------------------------------------------------------------------------------------------------
