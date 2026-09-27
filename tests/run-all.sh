@@ -31,6 +31,13 @@ need git
 need python3
 ensure_work_dir
 
+# --- 0. only one branch may publish ----------------------------------------
+#
+# Needs no network, so it runs first and still runs when a build below fails.
+
+run "only the develop branch publishes, and never over newer work" \
+	"$SCRIPT_DIR/test_publish_guard.sh"
+
 # --- 1. build both forks from pristine upstream ----------------------------
 
 say "Building the Kalico fork from upstream"
@@ -51,6 +58,14 @@ note "configurator fork built"
 
 KALICO="$WORK_DIR/kalico"
 CONF="$WORK_DIR/configurator"
+
+# --- 1b. publishing, rehearsed ----------------------------------------------
+#
+# Both build scripts, for real and with --push, against local stand-ins that
+# borrow the checkouts just built -- including a second publisher mid-build.
+
+run "publishing, rehearsed against local stand-ins" \
+	"$SCRIPT_DIR/test_publish_rehearsal.sh" "$KALICO" "$CONF"
 
 # --- 2. bed_mesh: the mesh must be unchanged -------------------------------
 
@@ -81,6 +96,31 @@ else
 fi
 
 # --- 3b. heat soak: the operator can see it working ------------------------
+
+# --- the graph scripts must not drag the printer stack in ------------------
+# RatOS invokes these by path, so they run under their shebang's python3 -- the
+# system one, which has matplotlib and numpy but no cffi. Kalico's package
+# __init__ would pull printer -> mcu -> chelper -> cffi and kill every graph.
+run "graph scripts import without the printer stack" \
+	python3 "$SCRIPT_DIR/test_graph_script_import.py" \
+	"$KALICO/scripts/graph_accelerometer.py" \
+	"$KALICO/scripts/calibrate_shaper.py"
+
+PRISTINE_GRAPH="$WORK_DIR/graph_accelerometer.pristine.py"
+mkdir -p "$WORK_DIR/pristine-graph/scripts"
+ln -sfn "$KALICO/klippy" "$WORK_DIR/pristine-graph/klippy"
+git -C "$KALICO" show "HEAD~1:scripts/graph_accelerometer.py" \
+	>"$WORK_DIR/pristine-graph/scripts/graph_accelerometer.py"
+cp "$WORK_DIR/pristine-graph/scripts/graph_accelerometer.py" "$PRISTINE_GRAPH"
+printf '\n--- control: pristine graph script must NOT import cleanly ---\n'
+if python3 "$SCRIPT_DIR/test_graph_script_import.py" \
+	"$WORK_DIR/pristine-graph/scripts/graph_accelerometer.py" >/dev/null 2>&1; then
+	printf '!!! FAILED: unpatched graph_accelerometer.py imported without the printer stack.\n'
+	printf '    Either Kalico changed its package layout or the test stopped measuring.\n'
+	FAILED=1
+else
+	printf 'ok: unpatched graph script fails as expected\n'
+fi
 
 SOAK="$CONF/configuration/klippy/beacon_adaptive_heat_soak.py"
 run "patched heat soak reports to the console" \
@@ -131,6 +171,14 @@ python3 "$SCRIPT_DIR/check_undefined_names.py" \
 	"$CONF/configuration/klippy/resonance_generator.py" \
 	"$CONF/configuration/klippy/beacon_adaptive_heat_soak.py" ||
 	FAILED=1
+
+printf '\n--- heater power sensor ---\n'
+# The klippy extension behind the watt display. It runs on the printer, so the
+# ways it deliberately does not fail -- an unknown heater, a min/max it ignores
+# -- are behaviour worth pinning, not politeness.
+run "heater_power reports watts and cannot stop the printer" \
+	python3 "$SCRIPT_DIR/test_heater_power.py" \
+	"$CONF/configuration/klippy/heater_power.py"
 
 printf '\n--- service macros ---\n'
 # The service macros are Jinja templates Klippy renders in full before their

@@ -43,6 +43,8 @@ the value running on the machine today.
 | `configuration/printers/v-core-4-1-idex/600.cfg` | **The stock folder, not the new one.** The shared template hardcodes `[include RatOS/printers/v-core-4-1-idex/${size}.cfg]`. |
 | `.../v-core-4-1-idex-600/printer.cfg.overrides` | Documentation that ships to the printer, next to the definition. |
 | `.../v-core-4-1-idex-600/maintenance.cfg` | Optional service macros the operator includes from `printer.cfg`. Shipped rather than pasted so they follow updates. |
+| `.../v-core-4-1-idex-600/power-sensors.cfg` | The watt sensors. Included by `600.cfg` like the service macros. |
+| `configuration/klippy/heater_power.py` | The sensor type those sections use. RatOS symlinks registered extensions from there into `~/klipper/klippy/extras`. |
 
 The definition points `"template"` at the stock `v-core-4-1-idex.ts`, so no new
 template has to be bundled — only definitions are read at runtime.
@@ -279,6 +281,68 @@ macro says which variable to change instead of sweeping with nothing running.
 
 It leaves T0 as the selected carriage, which is also where a fresh `G28` leaves
 the machine, so the mesh and the heat soak can follow directly.
+
+### The watt display
+
+The interface shows each heater's duty cycle as a percentage and has no field
+for watts. `power-sensors.cfg` turns the same duty cycle into power and hands it
+over as a `[temperature_sensor]`, which the interface does render live and
+graph:
+
+| Sensor | Heater | Rating |
+|---|---|---|
+| `W_heater_bed`, `W_BED_VR`, `W_BED_HL`, `W_BED_HR` | the four bed zones | 600 W each |
+| `W_chamber` | `chamber_heater` | 1500 W |
+| `W_total` | all five | 3900 W at once |
+
+The `W_` prefix groups them in the panel and puts the unit where it can be read,
+because **the panel labels every sensor in degrees** — there is no way to tell
+it otherwise from a config. `1850` on `W_total` means 1850 watts.
+
+**The numbers are derived, not measured.** Nothing senses current or mains
+voltage: it is rated power times the fraction of time the heater is switched on.
+An aged element, or a mains that sags when 3900 W come on at once, moves the
+real figure without moving this one. It answers "what is the printer asking
+for", not "what is the meter reading". The totals also cover those five heaters
+and nothing else — no steppers, no electronics, no hotends (add them to
+`W_total`'s two lists if you want them; they are roughly 60–100 W each).
+
+#### How it gets there
+
+`klippy/heater_power.py` registers a Klipper *sensor type*, the same way
+`temperature_combined` does — `load_config` calls
+`pheaters.add_sensor_factory("heater_power", …)`. That is why `power-sensors.cfg`
+opens with a bare `[heater_power]` section: a `[temperature_sensor]` does not
+load the module that implements its `sensor_type`, and the factory has to be
+registered before the sections that use it are parsed.
+
+Installation is an update and nothing else. `patch_configurator.py` ships the
+module into `configuration/klippy/`, and `t_register_heater_power_extension`
+adds it to `expected_extensions` in `ratos-common.sh`; RatOS'
+`verify_registered_extensions` registers and symlinks anything in that array the
+printer does not have yet, on every update.
+
+Those two halves fail silently apart — a registered extension whose file is
+missing resolves to an empty path, and a shipped file nobody registered is never
+symlinked, which stops the printer at boot on the first `sensor_type:
+heater_power`. `build-configurator-fork.sh` therefore checks that both are
+present and runs the module's test against the shipped copy.
+
+#### What it will not do
+
+The module is deliberately not strict, because a display must never be why a
+printer will not boot:
+
+- A heater named in the config that the printer does not have is **dropped with
+  a console warning**, not a config error. The name to check is in the message
+  and in the sensor's status.
+- `min_temp` / `max_temp` are accepted and **never enforced**. A watt reading
+  cannot shut the printer down, however large it gets — unlike
+  `temperature_combined`, which calls `invoke_shutdown` on range violations.
+
+`chamber_heater` is RatOS' name for the chamber heater and is the one guess in
+the file. If the machine calls it something else, the console says so at boot
+and `rated_watts`/`heaters` in `power-sensors.cfg` is where to fix it.
 
 ### What the two helpers are for
 

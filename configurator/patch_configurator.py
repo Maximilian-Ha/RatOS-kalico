@@ -973,6 +973,34 @@ def t_drop_gcode_shell_extension(text, cfg):
     )
 
 
+def t_register_heater_power_extension(text, cfg):
+    """Register klippy/heater_power.py, so a bed watt display arrives with an update.
+
+    RatOS symlinks registered extensions into ``~/klipper/klippy/extras`` and
+    ``verify_registered_extensions`` re-registers anything in
+    ``expected_extensions`` that the persisted registry does not have yet --
+    which runs on every update. Adding the entry here is therefore the whole
+    installation: no command on the printer, no edit to printer.cfg.
+
+    The anchor is the entry directly above it in the array rather than the
+    array header, so a RatOS release that adds its own extensions does not
+    silently change where this one lands.
+
+    No collision risk with Kalico: ``heater_power.py`` is a name Kalico does not
+    ship, so the symlink is untracked in klipper's tree and survives the
+    migration's ``reset --hard`` (see docs/RISKS.md section 12 for the case
+    where it would not).
+    """
+    return sub_once(
+        text,
+        '\t\t["ratos_dual_carriage_extras"]=$(realpath "${RATOS_PRINTER_DATA_DIR}/config/RatOS/klippy/ratos_dual_carriage_extras.py")\n',
+        '\t\t["ratos_dual_carriage_extras"]=$(realpath "${RATOS_PRINTER_DATA_DIR}/config/RatOS/klippy/ratos_dual_carriage_extras.py")\n'
+        "\t\t# %s: reports heater duty cycle as watts, for the interface.\n"
+        '\t\t["heater_power"]=$(realpath "${RATOS_PRINTER_DATA_DIR}/config/RatOS/klippy/heater_power.py")\n' % MARKER,
+        "ratos-common.sh: register heater_power extension",
+    )
+
+
 def t_sweeping_period(path_text_pairs, cfg):
     """Pin sweeping_period so shaper results do not silently change.
 
@@ -1028,7 +1056,10 @@ FILE_TRANSFORMS = [
     ),
     ("configuration/klippy/ratos_homing.py", [t_ratos_homing]),
     ("configuration/klippy/resonance_generator.py", [t_resonance_generator]),
-    ("configuration/scripts/ratos-common.sh", [t_drop_gcode_shell_extension]),
+    (
+        "configuration/scripts/ratos-common.sh",
+        [t_drop_gcode_shell_extension, t_register_heater_power_extension],
+    ),
     ("configuration/klippy/requirements.txt", [t_klippy_requirements]),
     ("src/server/helpers/klipper-config.ts", [t_tmc2240_rref]),
     ("configuration/z-probe/beacon.cfg", [t_beacon_homing_retract]),
@@ -1095,6 +1126,39 @@ PRINTER600_STOCK = "v-core-4-1-idex"
 PRINTER600_IMAGE = "v-core-4-idex.png"
 
 
+KLIPPY_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "klippy")
+KLIPPY_EXTRAS = ["heater_power.py"]
+
+
+def klippy_extras_plan(checkout, cfg):
+    """Ship the fork's own klippy extensions into configuration/klippy/.
+
+    RatOS symlinks everything it has registered from there into
+    ``~/klipper/klippy/extras``, and ``verify_registered_extensions`` registers
+    what is missing on every update -- so shipping the file and listing it in
+    ``expected_extensions`` (see ``t_register_heater_power_extension``) is the
+    whole installation.
+
+    Deliberately NOT gated by ``--no-printer-600``: the registration in
+    ``ratos-common.sh`` is not either, and a registered extension whose file is
+    absent makes ``realpath`` return nothing and the registration fail on the
+    printer. An extension nobody's config references is inert anyway.
+
+    Returns text writes.
+    """
+    dest_dir = os.path.join(checkout, "configuration", "klippy")
+    if not os.path.isdir(dest_dir):
+        raise AnchorError(
+            "configuration/klippy is gone -- RatOS has moved its klippy "
+            "extensions and heater_power.py needs a new home"
+        )
+    writes = []
+    for name in KLIPPY_EXTRAS:
+        with open(os.path.join(KLIPPY_SRC, name), "r") as handle:
+            writes.append((os.path.join(dest_dir, name), handle.read()))
+    return writes
+
+
 def printer_600_plan(checkout, cfg):
     """Ship "V-Core 4.1 IDEX 600" as a real printer type.
 
@@ -1144,7 +1208,8 @@ def printer_600_plan(checkout, cfg):
 
     dest = os.path.join(printers, PRINTER600_ID)
     writes = []
-    for name in ("printer-definition.json", "printer.cfg.overrides", "maintenance.cfg"):
+    for name in ("printer-definition.json", "printer.cfg.overrides", "maintenance.cfg",
+                 "power-sensors.cfg"):
         with open(os.path.join(PRINTER600_SRC, name), "r") as handle:
             writes.append((os.path.join(dest, name), handle.read()))
     with open(os.path.join(PRINTER600_SRC, "600.cfg"), "r") as handle:
@@ -1277,6 +1342,18 @@ def main(argv=None):
         for src, dst in p600_copies:
             if not os.path.isfile(dst) or open(src, "rb").read() != open(dst, "rb").read():
                 binary_copies.append((src, dst))
+
+    try:
+        for path, text in klippy_extras_plan(checkout, cfg):
+            existing = None
+            if os.path.isfile(path):
+                with open(path, "r") as handle:
+                    existing = handle.read()
+            if existing != text:
+                pending.append((path, text))
+    except (AnchorError, OSError) as exc:
+        sys.stderr.write("ERROR: klippy extensions: %s\n" % exc)
+        return 1
 
     try:
         wf_writes, wf_deletes = workflow_plan(checkout, cfg)

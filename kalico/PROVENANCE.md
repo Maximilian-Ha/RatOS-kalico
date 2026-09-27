@@ -1,5 +1,12 @@
 # Where `0001-ratos-compat-bed_mesh-gcode_macro.patch` comes from
 
+The patch has **two unrelated halves**. The larger one, described below, is a
+re-implementation of RatOS' own Klipper commits. The smaller one is a fix the
+fork had to write itself, documented under
+[The graph scripts](#the-graph-scripts).
+
+## The RatOS commits
+
 RatOS 2.1 does not run on stock Klipper. It runs on `Rat-OS/klipper`, branch
 `ratos/v2.1.x`, which is upstream Klipper `b7233d11` plus **six commits in two
 files**:
@@ -93,10 +100,56 @@ it stops a large Beacon mesh from blocking the Klippy greenlet and tripping
   subscriber polling during the yields can observe a torn or empty mesh. Adding
   the yields without this fix would actively make that race worse.
 
+## The graph scripts
+
+`scripts/graph_accelerometer.py` and `scripts/calibrate_shaper.py` are Kalico's
+own, and nothing in RatOS' Klipper commits touches them. They are in this patch
+because Kalico's package layout breaks them for every RatOS user.
+
+RatOS' belt-tension and input-shaper macros invoke them **by path**, so the
+interpreter is the one their shebang names — `#!/usr/bin/env python3`, the
+system python3, not the klippy venv. A RatOS image gives that interpreter
+matplotlib and numpy. It does not give it cffi.
+
+Kalico turned `klippy` into a package whose `__init__.py` is
+`from .printer import *`. So the scripts' own
+
+```python
+from klippy.extras import shaper_calibrate
+```
+
+pulls in `printer` → `mcu` → `chelper` → `import cffi`, and every graph dies
+with `ModuleNotFoundError: No module named 'cffi'` before drawing anything. On
+Klipper the same line worked because `klippy/` was only on `sys.path`; there was
+no package `__init__` to run.
+
+The fix registers stub `klippy` and `klippy.extras` modules in `sys.modules`
+first, so the import machinery finds them already present and never executes
+their `__init__`, while `from . import shaper_defs` inside `shaper_calibrate`
+still resolves through the stub's `__path__`. Nothing but the analysis module
+loads. `shaper_calibrate` itself imports numpy lazily, which is why this works
+at all.
+
+The alternative — installing `python3-cffi`, `python3-greenlet` and
+`python3-serial` on every printer — was rejected: it makes a plotting script
+import a printer stack to draw a graph, and it only helps machines whose owner
+knows to do it.
+
+`tests/test_graph_script_import.py` executes each script's real preamble and
+asserts `shaper_calibrate` arrived while `klippy.printer` and `cffi` did not.
+`tests/run-all.sh` runs the same test against pristine Kalico and requires it to
+**fail**, so it cannot decay into a tautology.
+
 ## Verified
 
-- `git apply --check` against pristine Kalico `ae261624`: clean, both files.
-- `python3 -m py_compile` on both patched files: clean.
+- `git apply --check` against pristine Kalico `ae261624`: clean, all four files.
+- `python3 -m py_compile` on every patched file: clean.
+- The graph-script fix, end to end, in a container that happens to have the
+  printer's exact deficiency — numpy present, cffi absent: pristine
+  `graph_accelerometer.py` raises `ModuleNotFoundError: No module named 'cffi'`
+  at `klippy/chelper/__init__.py:9`; patched, both scripts import
+  `shaper_calibrate` with `klippy.printer` and `cffi` absent from
+  `sys.modules`.
 - `ruff format --check` and `ruff check`: clean — but under ruff **0.15.8**,
   not the 0.15.22 Kalico pins in `pyproject.toml:23`. Re-check before shipping.
 

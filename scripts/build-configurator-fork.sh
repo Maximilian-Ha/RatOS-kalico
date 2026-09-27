@@ -11,6 +11,13 @@
 #   scripts/build-configurator-fork.sh [--push] [--kalico-commit SHA]
 #                                      [--base <commit-ish>] [--no-sweeping-period]
 #                                      [--changelog-since <commit-ish>]
+#                                      [--allow-rollback]
+#
+# --push publishes, and is refused unless this checkout is $PUBLISH_BRANCH,
+# clean, and exactly what origin has, and unless the build currently published
+# came from a RatOS-kalico commit HEAD contains. --allow-rollback skips that
+# last check, for when discarding what is live is really intended. See
+# docs/MAINTENANCE.md, "Who may publish".
 #
 # --changelog-since overrides where the printer-facing changelog starts. The
 # range normally comes from the RatOS-Kalico-Definition trailer of the last
@@ -30,11 +37,13 @@ PUSH=0
 BASE=""
 KALICO_COMMIT=""
 CHANGELOG_SINCE=""
+ALLOW_ROLLBACK=0
 EXTRA_ARGS=()
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--push) PUSH=1 ;;
+	--allow-rollback) ALLOW_ROLLBACK=1 ;;
 	--kalico-commit)
 		shift
 		KALICO_COMMIT="${1:-}"
@@ -64,6 +73,18 @@ need git
 need python3
 ensure_work_dir
 
+# Refuse a publish before spending time on a build that may not go out. What is
+# checked here is also what the push is held to at the end: HEAD, and the live
+# build, which the push is leased on.
+if [ "$PUSH" -eq 1 ]; then
+	say "Checking this checkout may publish"
+	require_publish_allowed
+	read_live_configurator_build
+	require_descends_from_live "$LIVE_TIP" "$LIVE_DEFINITION" "$FORK_CONFIGURATOR_BRANCH"
+	START_HEAD="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+	START_LIVE_TIP="$LIVE_TIP"
+fi
+
 if [ -z "$KALICO_COMMIT" ]; then
 	[ -f "$WORK_DIR/kalico-commit.txt" ] ||
 		die "no Kalico commit known. Run scripts/build-kalico-fork.sh first, or
@@ -71,6 +92,9 @@ if [ -z "$KALICO_COMMIT" ]; then
 	KALICO_COMMIT="$(cat "$WORK_DIR/kalico-commit.txt")"
 fi
 say "Pinning klipper to $KALICO_COMMIT"
+if [ "$PUSH" -eq 1 ]; then
+	require_kalico_built_from_head "$KALICO_COMMIT"
+fi
 
 # The pinned commit MUST already be published, or the printer is pointed at a
 # commit that does not exist: klipper-fork-migration.sh's `git cat-file -e`
@@ -113,6 +137,21 @@ git -C "$CHECKOUT" clean --quiet -ffdx -- configuration .github
 # leaves __pycache__ behind, which `add -u` does not stage and the commit
 # guard then rejects. Clean exactly that, by pathspec.
 git -C "$CHECKOUT" clean --quiet -ffdx -- 'src/**/__pycache__'
+
+# What is published now: the changelog below starts from it. Read before the
+# checkout is modified, because a refusal after that point leaves it dirty and
+# the next run would stop at ensure_checkout until someone cleans it up.
+ensure_fork_remote "$CHECKOUT" "$FORK_CONFIGURATOR_URL"
+FETCHED_TIP="$(git -C "$CHECKOUT" rev-parse --quiet --verify \
+	"refs/remotes/fork/$FORK_CONFIGURATOR_BRANCH" || true)"
+# A publish's changelog must describe what it replaces -- the build checked at
+# the start, which the push is leased on. ensure_fork_remote does not fail when
+# the fetch does, so a stale ref here is possible, as is a publish since.
+if [ "$PUSH" -eq 1 ] && [ "$FETCHED_TIP" != "$START_LIVE_TIP" ]; then
+	die "the published $FORK_CONFIGURATOR_BRANCH is not the build checked at the start
+    (checked '${START_LIVE_TIP:0:12}', fetched '${FETCHED_TIP:0:12}'): someone
+    published in the meantime, or fetching the fork failed. Run it again."
+fi
 
 say "Applying the Kalico delta"
 python3 "$REPO_ROOT/configurator/patch_configurator.py" \
@@ -211,12 +250,12 @@ fi
 # wrote into that build's message. If that commit is unknown -- a first build,
 # or a checkout without it -- say so rather than printing a changelog that
 # might be wrong. A changelog nobody can trust is worse than none.
-ensure_fork_remote "$CHECKOUT" "$FORK_CONFIGURATOR_URL"
 DEFINITION_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-PREV_MESSAGE="$(git -C "$CHECKOUT" log -1 --format=%B \
-	"fork/$FORK_CONFIGURATOR_BRANCH" 2>/dev/null || true)"
-PREV_DEFINITION="$(printf '%s\n' "$PREV_MESSAGE" |
-	sed -n 's/^RatOS-Kalico-Definition: \([0-9a-f]\{40\}\)$/\1/p' | head -1)"
+PREV_MESSAGE=""
+if [ -n "$FETCHED_TIP" ]; then
+	PREV_MESSAGE="$(git -C "$CHECKOUT" log -1 --format=%B "$FETCHED_TIP")"
+fi
+PREV_DEFINITION="$(printf '%s\n' "$PREV_MESSAGE" | definition_trailer)"
 PREV_KALICO="$(printf '%s\n' "$PREV_MESSAGE" |
 	sed -n 's/^Klipper pinned to \([0-9a-f]\{40\}\).*$/\1/p' | head -1)"
 
@@ -275,6 +314,21 @@ $BULLETS
 
 $KLIPPER_LINE
 Built from RatOS-kalico ${DEFINITION_SHA:0:12}, RatOS ${BASE:0:12}"
+
+# The watt display is two halves that fail silently apart: the extension file
+# in configuration/klippy, and its entry in ratos-common.sh's
+# expected_extensions. Without the entry the file is never symlinked and every
+# [temperature_sensor] using it stops the printer at boot; without the file the
+# registration resolves to an empty path.
+EXT="$CHECKOUT/configuration/klippy/heater_power.py"
+[ -f "$EXT" ] || die "heater_power.py was not shipped into configuration/klippy"
+grep -q 'klippy/heater_power.py' "$CHECKOUT/configuration/scripts/ratos-common.sh" ||
+	die "heater_power.py is shipped but not registered in expected_extensions --
+    RatOS would never symlink it, and the sensors referencing it would stop
+    the printer at boot"
+python3 "$REPO_ROOT/tests/test_heater_power.py" "$EXT" ||
+	die "the shipped heater_power.py does not behave"
+note "heater_power.py shipped, registered and behaving"
 
 say "Committing"
 # Stage everything the patcher touched. An explicit path list is how the numpy
@@ -352,11 +406,17 @@ python3 "$REPO_ROOT/tests/test_changelog_message.py" "$CHECKOUT" \
 CONFIGURATOR_COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"
 
 if [ "$PUSH" -eq 1 ]; then
+	# The trailer names DEFINITION_SHA, so that is what HEAD must still be.
+	[ "$DEFINITION_SHA" = "$START_HEAD" ] ||
+		die "HEAD moved during the build; the result would be labelled with the wrong commit. Run it again."
+	recheck_before_push "$START_HEAD" "$START_LIVE_TIP"
 	say "Pushing to $FORK_CONFIGURATOR_URL"
-	# Named remote, so --force-with-lease has a remote-tracking ref to derive
-	# its lease from; against a bare URL the lease is silently a no-op.
-	ensure_fork_remote "$CHECKOUT" "$FORK_CONFIGURATOR_URL"
-	git -C "$CHECKOUT" push --force-with-lease fork \
+	# The lease is explicit: the push goes through only if the branch is still
+	# at the build checked at the start (or absent, if it was). A lease derived
+	# from a remote-tracking ref would take whatever the latest fetch saw, and a
+	# publish that landed in between would be overwritten unseen.
+	git -C "$CHECKOUT" push \
+		--force-with-lease="refs/heads/$FORK_CONFIGURATOR_BRANCH:$START_LIVE_TIP" fork \
 		"$FORK_CONFIGURATOR_BRANCH:$FORK_CONFIGURATOR_BRANCH"
 	note "pushed $FORK_CONFIGURATOR_BRANCH"
 	warn "This is the SOURCE branch. Moonraker pulls"
