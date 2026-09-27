@@ -31,6 +31,13 @@ need git
 need python3
 ensure_work_dir
 
+# --- 0. only one branch may publish ----------------------------------------
+#
+# Needs no network, so it runs first and still runs when a build below fails.
+
+run "only the develop branch publishes, and never over newer work" \
+	"$SCRIPT_DIR/test_publish_guard.sh"
+
 # --- 1. build both forks from pristine upstream ----------------------------
 
 say "Building the Kalico fork from upstream"

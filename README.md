@@ -96,7 +96,10 @@ Then check the URLs in [`fork.conf`](fork.conf) match. They are pre-filled for
 `Maximilian-Ha`; nothing else in the repo hardcodes them.
 
 **3. Build and publish both fork branches.** Order matters — `moonraker.conf`
-has to pin the Kalico commit, so the firmware fork goes first:
+has to pin the Kalico commit, so the firmware fork goes first. `--push` works
+only on the develop branch (`PUBLISH_BRANCH` in `fork.conf`), from a clean tree
+that matches origin; see [docs/MAINTENANCE.md](docs/MAINTENANCE.md), "Who may
+publish":
 
 ```bash
 scripts/build-kalico-fork.sh --push        # ratos-kalico/v2.1.x + master alias

@@ -8,10 +8,15 @@
 # the last line and writes it to .work/kalico-commit.txt.
 #
 # Usage:
-#   scripts/build-kalico-fork.sh [--push] [--base <commit-ish>]
+#   scripts/build-kalico-fork.sh [--push] [--base <commit-ish>] [--allow-rollback]
 #
 #   --push          push $FORK_KALICO_BRANCH and the recovery branch to
-#                   $FORK_KALICO_URL
+#                   $FORK_KALICO_URL. Only from $PUBLISH_BRANCH, clean and
+#                   pushed, and only over a published configurator build that
+#                   HEAD contains -- see docs/MAINTENANCE.md, "Who may publish"
+#   --allow-rollback
+#                   publish even though the live configurator build came from a
+#                   RatOS-kalico commit HEAD does not contain. That discards it
 #   --base REF      build on top of REF instead of the upstream branch tip
 #                   (use $VERIFIED_KALICO_COMMIT to reproduce a known-good build)
 
@@ -21,10 +26,12 @@ source "$SCRIPT_DIR/lib.sh"
 
 PUSH=0
 BASE=""
+ALLOW_ROLLBACK=0
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--push) PUSH=1 ;;
+	--allow-rollback) ALLOW_ROLLBACK=1 ;;
 	--base)
 		shift
 		BASE="${1:-}"
@@ -42,6 +49,18 @@ done
 need git
 need python3
 ensure_work_dir
+
+# Refuse a publish before spending minutes on a build that may not go out. The
+# live-build check matters here too, although this script does not touch the
+# configurator: the configurator's next build pins whatever this pushes, and
+# pushing from a line that lacks the live configurator build would move the
+# firmware out from under the pin that build set.
+if [ "$PUSH" -eq 1 ]; then
+	say "Checking this checkout may publish"
+	require_publish_allowed
+	read_live_configurator_build
+	require_descends_from_live "$LIVE_TIP" "$LIVE_DEFINITION" "$FORK_CONFIGURATOR_BRANCH"
+fi
 
 PATCH="$REPO_ROOT/kalico/0001-ratos-compat-bed_mesh-gcode_macro.patch"
 [ -f "$PATCH" ] || die "missing $PATCH"
@@ -186,6 +205,9 @@ mkdir -p "$WORK_DIR"
 printf '%s\n' "$KALICO_COMMIT" >"$WORK_DIR/kalico-commit.txt"
 
 if [ "$PUSH" -eq 1 ]; then
+	# Again, now: the build read this checkout, so it must still be the commit
+	# that was checked -- and still what origin has.
+	require_publish_allowed
 	say "Pushing to $FORK_KALICO_URL"
 	# Via a named remote, so --force-with-lease has a remote-tracking ref to
 	# derive its lease from. --atomic keeps a rejected lease from leaving the

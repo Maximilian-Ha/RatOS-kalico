@@ -12,9 +12,68 @@ transform whose anchor moved.
 
 ---
 
+## Who may publish
+
+Publishing — `--push` on either build script — force-pushes the branches every
+printer on this fork updates from, rebuilt from pristine upstream plus whatever
+the current checkout contains. The last publish therefore wins outright, and
+two branches that both publish take turns deleting each other's work without a
+word. That is how `power-sensors.cfg` vanished from a running printer whose
+`printer.cfg` still included it: a publish from a branch that had never seen
+the commit that added the file.
+
+So there is one line, and the scripts enforce it:
+
+```
+feature branches ──merge/PR──▶ claude/kalico-rat-os-fork-dd8k9j ──PR──▶ main
+                               (develop: the only branch that publishes)
+```
+
+- **Feature branches** are where work happens. They build freely — every
+  script works without `--push` — but they never publish.
+- **`claude/kalico-rat-os-fork-dd8k9j`** is the develop branch, `PUBLISH_BRANCH`
+  in `fork.conf`. It is the only branch the build scripts publish from.
+- **`main`** is updated from develop by pull request, as the record of what has
+  gone out. It never publishes itself.
+
+With `--push`, both build scripts refuse — before building anything — unless:
+
+| Check | Why |
+|---|---|
+| the checkout is on `PUBLISH_BRANCH` | the rule itself |
+| the tree is clean, untracked files included | the build reads the working tree, but the result is labelled with HEAD |
+| HEAD is exactly what origin has | a commit only one machine has cannot be merged, diffed or rolled back to by anyone else |
+| the live build names a RatOS-kalico commit that HEAD contains | otherwise publishing discards something printers already run |
+
+The last check reads the `RatOS-Kalico-Definition` trailer of the configurator
+build that is currently published (see "The changelog the printer shows") and
+requires that commit to be HEAD or an ancestor of it. It is what still holds
+when someone *did* publish from elsewhere — with an older script, or by hand.
+The Kalico build runs it too, although it does not touch the configurator: the
+next configurator build pins whatever the Kalico build pushes. And the
+configurator's push is leased on exactly the tip it checked, so a publish that
+lands in the middle of a build makes the push fail instead of being overwritten.
+
+When it refuses because the live build came from another branch, the message
+names the commit and how to find the branch that has it. Merge that branch into
+develop, push, publish again — which is exactly what repairing the
+power-sensors incident took. `--allow-rollback` skips that one check, for the
+rare case where discarding what is live really is the point. Nothing skips the
+other three.
+
+**What this cannot stop.** The guard lives in the scripts, so it binds only
+checkouts that have it. A branch that split off before it carries the old
+scripts and can still publish unchecked. Do not run `--push` from such a branch;
+merge its work into develop instead. `tests/test_publish_guard.sh` exercises
+every check against throwaway repositories, needs no network, and runs first in
+`tests/run-all.sh`.
+
+---
+
 ## Following a new Kalico release
 
 ```bash
+# on develop, clean and pushed -- see "Who may publish"
 scripts/build-kalico-fork.sh --push
 scripts/build-configurator-fork.sh --push      # re-pins moonraker.conf
 ```
@@ -40,7 +99,7 @@ way; only one of those states is diagnosable.
 ## Following a new RatOS release
 
 ```bash
-scripts/build-configurator-fork.sh --push
+scripts/build-configurator-fork.sh --push      # on develop, clean and pushed
 ```
 
 Each transform asserts its anchor matches **exactly once** and aborts naming

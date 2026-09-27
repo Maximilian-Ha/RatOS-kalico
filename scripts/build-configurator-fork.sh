@@ -11,6 +11,13 @@
 #   scripts/build-configurator-fork.sh [--push] [--kalico-commit SHA]
 #                                      [--base <commit-ish>] [--no-sweeping-period]
 #                                      [--changelog-since <commit-ish>]
+#                                      [--allow-rollback]
+#
+# --push publishes, and is refused unless this checkout is $PUBLISH_BRANCH,
+# clean, and exactly what origin has, and unless the build currently published
+# came from a RatOS-kalico commit HEAD contains. --allow-rollback skips that
+# last check, for when discarding what is live is really intended. See
+# docs/MAINTENANCE.md, "Who may publish".
 #
 # --changelog-since overrides where the printer-facing changelog starts. The
 # range normally comes from the RatOS-Kalico-Definition trailer of the last
@@ -30,11 +37,13 @@ PUSH=0
 BASE=""
 KALICO_COMMIT=""
 CHANGELOG_SINCE=""
+ALLOW_ROLLBACK=0
 EXTRA_ARGS=()
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--push) PUSH=1 ;;
+	--allow-rollback) ALLOW_ROLLBACK=1 ;;
 	--kalico-commit)
 		shift
 		KALICO_COMMIT="${1:-}"
@@ -63,6 +72,14 @@ done
 need git
 need python3
 ensure_work_dir
+
+# Refuse a publish before spending time on a build that may not go out. Whether
+# the live build is contained in HEAD is checked further down, where the fork
+# is fetched anyway.
+if [ "$PUSH" -eq 1 ]; then
+	say "Checking this checkout may publish"
+	require_publish_allowed
+fi
 
 if [ -z "$KALICO_COMMIT" ]; then
 	[ -f "$WORK_DIR/kalico-commit.txt" ] ||
@@ -213,10 +230,21 @@ fi
 # might be wrong. A changelog nobody can trust is worse than none.
 ensure_fork_remote "$CHECKOUT" "$FORK_CONFIGURATOR_URL"
 DEFINITION_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-PREV_MESSAGE="$(git -C "$CHECKOUT" log -1 --format=%B \
-	"fork/$FORK_CONFIGURATOR_BRANCH" 2>/dev/null || true)"
-PREV_DEFINITION="$(printf '%s\n' "$PREV_MESSAGE" |
-	sed -n 's/^RatOS-Kalico-Definition: \([0-9a-f]\{40\}\)$/\1/p' | head -1)"
+# LIVE_TIP is also the push's lease, so the build that the changelog and the
+# check below were computed against is the only one this push may replace.
+LIVE_TIP="$(git -C "$CHECKOUT" rev-parse --quiet --verify \
+	"refs/remotes/fork/$FORK_CONFIGURATOR_BRANCH" || true)"
+PREV_MESSAGE=""
+if [ -n "$LIVE_TIP" ]; then
+	PREV_MESSAGE="$(git -C "$CHECKOUT" log -1 --format=%B "$LIVE_TIP")"
+fi
+PREV_DEFINITION="$(printf '%s\n' "$PREV_MESSAGE" | definition_trailer)"
+
+# Before --changelog-since can replace PREV_DEFINITION: this is about what is
+# live, not about where the changelog starts.
+if [ "$PUSH" -eq 1 ]; then
+	require_descends_from_live "$LIVE_TIP" "$PREV_DEFINITION" "$FORK_CONFIGURATOR_BRANCH"
+fi
 PREV_KALICO="$(printf '%s\n' "$PREV_MESSAGE" |
 	sed -n 's/^Klipper pinned to \([0-9a-f]\{40\}\).*$/\1/p' | head -1)"
 
@@ -367,11 +395,18 @@ python3 "$REPO_ROOT/tests/test_changelog_message.py" "$CHECKOUT" \
 CONFIGURATOR_COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"
 
 if [ "$PUSH" -eq 1 ]; then
+	# Again, now: the trailer names DEFINITION_SHA, so HEAD must not have moved
+	# during the build, and must still be what origin has.
+	require_publish_allowed
+	[ "$(git -C "$REPO_ROOT" rev-parse HEAD)" = "$DEFINITION_SHA" ] ||
+		die "HEAD moved during the build; the result would be labelled with the wrong commit. Run it again."
 	say "Pushing to $FORK_CONFIGURATOR_URL"
-	# Named remote, so --force-with-lease has a remote-tracking ref to derive
-	# its lease from; against a bare URL the lease is silently a no-op.
-	ensure_fork_remote "$CHECKOUT" "$FORK_CONFIGURATOR_URL"
-	git -C "$CHECKOUT" push --force-with-lease fork \
+	# The lease is explicit: the push goes through only if the branch is still
+	# at LIVE_TIP, the build checked above (or absent, if it was). Deriving it
+	# from a remote-tracking ref instead would take whatever the latest fetch
+	# saw, and a publish that landed in between would be overwritten unseen.
+	git -C "$CHECKOUT" push \
+		--force-with-lease="refs/heads/$FORK_CONFIGURATOR_BRANCH:$LIVE_TIP" fork \
 		"$FORK_CONFIGURATOR_BRANCH:$FORK_CONFIGURATOR_BRANCH"
 	note "pushed $FORK_CONFIGURATOR_BRANCH"
 	warn "This is the SOURCE branch. Moonraker pulls"
